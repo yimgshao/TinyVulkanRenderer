@@ -1,0 +1,9 @@
+{
+    "type": "deferred",
+    "tonemap": true,            // ACES tonemapping 开关（useTonemap 变体）
+    "shadow": {
+        "enabled": false,       // 阴影开关（对应每盏灯 castsShadows 的初始值）
+        "directionalRes": 2048, // 定向光 shadow atlas 分辨率
+        "pointRes": 512         // 点光 shadow atlas 分辨率
+    }
+}

@@ -1,0 +1,12 @@
+{
+    "name": "courtyard_4k",
+    "source": "C:\\projects\\tinyvulkanrenderer\\scenes\\IBL\\courtyard\\courtyard_4k.exr",
+    "envSize": 512,
+    "irradianceSize": 32,
+    "prefilterSize": 128,
+    "prefilterMips": 5,
+    "lutSize": 512,
+    "samples": 1024,
+    "cubeConvention": 1,
+    "bakedAt": "2026-08-09 19:27:10"
+}

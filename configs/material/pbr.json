@@ -1,0 +1,4 @@
+{
+    "type": "PbrMaterial",      // 材质类型（MaterialTemplate 的 materialType）
+    "header": "materials/pbr.hlsl"  // 材质 shader 头（引擎 shader 目录内相对路径）
+}

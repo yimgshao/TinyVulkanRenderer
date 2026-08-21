@@ -1,0 +1,6 @@
+{
+    "renderer": "./renderer/deferred.json",
+    "material": "./material/pbr.json",
+    "scene": "../scenes/desktop/gltf.gltf",
+    "ibl": "../scenes/IBL/courtyard"
+}
