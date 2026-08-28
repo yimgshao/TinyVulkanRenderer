@@ -91,6 +91,10 @@ __pycache__/
 *.swo
 *~
 
+# Locally bootstrapped RenderDoc MCP and its temporary installation directories
+/third_party/renderdoc-mcp/
+/third_party/.renderdoc-mcp-bootstrap-*/
+
 # =============================================================================
 # AI
 # =============================================================================
