@@ -5,7 +5,8 @@
     python scripts/view_capture.py captures/capture_frame60.rdc   # 打开指定抓帧
     python scripts/view_capture.py                                # 打开抓帧目录里最新的 .rdc
 
-抓帧目录与 RenderDoc 安装目录从 configs/renderdoc.json 读取（与 capture.py 共用）。
+使用 scripts/renderdoc_mcp.ps1 编译的项目内 RenderDoc；抓帧目录从
+configs/renderdoc.json 读取（与 capture.py 共用）。
 """
 
 import argparse
@@ -17,9 +18,10 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "configs" / "renderdoc.json"
+RENDERDOC_BUILD_DIR = (PROJECT_ROOT / "third_party" / "renderdoc-mcp"
+                       / "renderdoc-src" / "x64" / "Development")
 
 DEFAULT_CONFIG = {
-    "renderdocDir": "C:/Program Files/RenderDoc",
     "captureDir": "captures",
 }
 
@@ -41,9 +43,10 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config()
-    qrenderdoc = Path(cfg["renderdocDir"]) / "qrenderdoc.exe"
+    qrenderdoc = RENDERDOC_BUILD_DIR / "qrenderdoc.exe"
     if not qrenderdoc.exists():
-        sys.exit(f"[view] 找不到 qrenderdoc.exe: {qrenderdoc}")
+        sys.exit(f"[view] 找不到 qrenderdoc.exe: {qrenderdoc}"
+                 "（请先运行 scripts/renderdoc_mcp.ps1）")
 
     if args.capture:
         rdc = Path(args.capture).resolve()

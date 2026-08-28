@@ -8,7 +8,8 @@
     python scripts/capture.py --name sun   # 抓帧文件名前缀（默认 capture）
 
 可执行文件路径与 run.ps1 的构建输出对应（build/<Config>/TinyVulkanRenderer.exe）。
-RenderDoc 安装目录、抓帧存储目录从 configs/renderdoc.json 读取。
+RenderDoc 使用 scripts/renderdoc_mcp.ps1 编译的项目内版本；抓帧存储目录从
+configs/renderdoc.json 读取。
 """
 
 import argparse
@@ -20,9 +21,10 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "configs" / "renderdoc.json"
+RENDERDOC_BUILD_DIR = (PROJECT_ROOT / "third_party" / "renderdoc-mcp"
+                       / "renderdoc-src" / "x64" / "Development")
 
 DEFAULT_CONFIG = {
-    "renderdocDir": "C:/Program Files/RenderDoc",
     "captureDir": "captures",  # 相对项目根目录，也可填绝对路径
 }
 
@@ -48,7 +50,7 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config()
-    renderdoccmd = Path(cfg["renderdocDir"]) / "renderdoccmd.exe"
+    renderdoccmd = RENDERDOC_BUILD_DIR / "renderdoccmd.exe"
     exe = (PROJECT_ROOT / "build" / ("Debug" if args.debug else "Release")
            / "TinyVulkanRenderer.exe")
 
@@ -59,7 +61,9 @@ def main():
 
     for path, what in [(renderdoccmd, "renderdoccmd.exe"), (exe, "渲染器可执行文件")]:
         if not path.exists():
-            sys.exit(f"[capture] 找不到{what}: {path}")
+            hint = ("（请先运行 scripts/renderdoc_mcp.ps1）"
+                    if what == "renderdoccmd.exe" else "")
+            sys.exit(f"[capture] 找不到{what}: {path}{hint}")
 
     cmd = [str(renderdoccmd), "capture",
            "-c", str(capture_dir / f"{args.name}.rdc"),
