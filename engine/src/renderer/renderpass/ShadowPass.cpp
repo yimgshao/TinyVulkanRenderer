@@ -92,7 +92,7 @@ void ShadowPass::drawSceneDepth(VkCommandBuffer cmd, const FrameContext& frame,
     VkRect2D scissor{{0, 0}, {resolution, resolution}};
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    vkCmdSetDepthBias(cmd, 1.5f, 0.0f, 2.0f);
+    vkCmdSetDepthBias(cmd, 1.5f, 0.0f, 0.5f);
 
     for (const auto& obj : scene->getRenderObjects()) {
         if (!obj.mesh) continue;

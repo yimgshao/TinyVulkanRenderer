@@ -26,7 +26,9 @@ float calcShadowDirectional(float3 worldPos, GPULight light)
     float4 ls  = mul(light.lightViewProj, float4(worldPos, 1.0));
     float3 ndc = ls.xyz / ls.w;
     float2 uv  = ndc.xy * 0.5 + 0.5;
-    float  refDepth = ndc.z * 0.5 + 0.5;
+    // lightViewProj uses GLM's ZO projection variants, so Vulkan NDC Z is
+    // already in [0, 1]. Only XY needs the clip-space-to-UV remap above.
+    float  refDepth = ndc.z;
 
     if (any(uv < 0.0) || any(uv > 1.0)) return 1.0;
 

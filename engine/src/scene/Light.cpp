@@ -30,9 +30,8 @@ void Light::fill(GPULight& out) const {
 //
 // 约定：光源投影使用 ZO 变体（orthoZO/perspectiveZO，NDC z∈[0,1]），
 // 避免 GL 风格矩阵的近端几何被 Vulkan 裁剪体（0≤z_c≤w_c）切掉。
-// 采样端 common/shadow.hlsl 使用 refDepth = ndc.z*0.5+0.5，
-// 与视口深度变换（[-1,1]→[min,max] 线性映射）保持一致。
-// 注意：矩阵（ZO）与重映射（*0.5+0.5）必须成对使用，单独改一侧都会出错。
+// 采样端 common/shadow.hlsl 直接使用 ndc.z 作为比较深度；Vulkan 视口
+// minDepth=0、maxDepth=1 时不会再对 ZO 深度执行 [-1,1]→[0,1] 重映射。
 // ------------------------------------------------------------------
 
 namespace {

@@ -65,7 +65,10 @@ struct Light {
 
     // Shadow
     bool  castsShadows = false;
-    float shadowBias   = 0.002f;
+    // Directional shadows already apply slope-scaled raster bias while writing
+    // the shadow map. Do not apply a second receiver-side offset here, since it
+    // erodes contact shadows and creates visible holes.
+    float shadowBias   = 0.0f;
 
     void fill(struct GPULight& out) const;
 };

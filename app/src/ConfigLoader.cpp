@@ -105,13 +105,17 @@ engine::Config ConfigLoader::load(const std::string& mainJsonPath) {
         root.setSection(key, std::move(sub));
     }
 
-    // scene / ibl：字符串值相对入口文件目录绝对化
-    for (const char* key : {"scene", "ibl"}) {
-        auto it = root.values().find(key);
-        if (it == root.values().end()) continue;
-        const std::string* v = std::get_if<std::string>(&it->second);
-        if (!v) continue;
-        root.set(key, resolvePath(baseDir, *v));
+    // scene：字符串值相对入口文件目录绝对化
+    if (auto it = root.values().find("scene"); it != root.values().end()) {
+        if (const std::string* v = std::get_if<std::string>(&it->second)) {
+            root.set("scene", resolvePath(baseDir, *v));
+        }
+    }
+
+    // ibl.path：字符串值相对入口文件目录绝对化
+    const std::string iblPath = root.getString("ibl.path", "");
+    if (!iblPath.empty()) {
+        root.set("ibl.path", resolvePath(baseDir, iblPath));
     }
 
     return root;

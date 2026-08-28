@@ -119,7 +119,7 @@ void Application::setPipeline(int type) {
     const engine::Config& materialCfg = config.section("material");
     // IBL 环境目录（仅 deferred 接入；ibl.enabled=false 时视同无路径）
     const std::string iblPath =
-        config.getBool("ibl.enabled", true) ? config.getString("ibl", "") : "";
+        config.getBool("ibl.enabled", true) ? config.getString("ibl.path", "") : "";
 
     // 1. Create and init renderer, then add custom passes
     std::unique_ptr<engine::IRenderer> renderer;
@@ -284,7 +284,7 @@ void Application::renderImGui() {
         }
 
         // B 类：IBL 开关 —— 经帧末管线重建生效（仅 deferred 且配置了环境目录时显示）
-        if (activePipeline == 1 && !config.getString("ibl", "").empty()) {
+        if (activePipeline == 1 && !config.getString("ibl.path", "").empty()) {
             bool ibl = config.getBool("ibl.enabled", true);
             if (ImGui::Checkbox("IBL", &ibl)) {
                 config.set("ibl.enabled", ibl);

@@ -14,7 +14,9 @@ namespace app {
  * 入口 main.json 语义：
  *   - "renderer"/"material"：值为 ".json" 结尾 → 相对入口文件目录加载子配置，
  *     挂为同名 section；值为 "forward"/"deferred"/"pbr" 等 → 视为内联 type
- *   - "scene"/"ibl"：字符串值相对入口文件目录转绝对路径
+ *   - "scene"：字符串值相对入口文件目录转绝对路径
+ *   - "ibl.path"：IBL 环境目录，相对入口文件目录转绝对路径；
+ *     "ibl.enabled"：是否启用 IBL
  *   - 其余 key 原样转换（object→section，bool→bool，number→double，
  *     string→string，array/null 跳过并警告）
  * 文件不存在或解析失败：警告 + 返回空 Config（全默认，行为与无配置一致）。
