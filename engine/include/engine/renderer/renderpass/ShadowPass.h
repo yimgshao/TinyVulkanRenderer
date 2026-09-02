@@ -14,20 +14,19 @@ namespace engine {
  * 使用 SV_RenderTargetArrayIndex 一次 BeginRendering 覆盖全部 atlas 层，
  * 不对每层单独 begin/end。
  *
- * 管线独立创建（不经 MaterialTemplate）：vertex-only, depth-only。
+ * Shader/Pipeline 由 RenderGraph 统一创建：vertex-only, depth-only。
  */
 class ShadowPass : public IRenderPass {
 public:
     ShadowPass();
 
-    void Setup(RenderGraphBuilder& builder) override;
+    void Setup(RenderGraphBuilder& builder,
+               const RenderGraphBuildContext& ctx) override;
     void Execute(VkCommandBuffer cmd, const FrameContext& frame,
                  const RGResources& resources) override;
 
     // ---- 构建期注入（由 ForwardRenderer::createDefaultPasses 设置） ----
-    VkDevice         device           = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout   = VK_NULL_HANDLE;
-    VkPipeline       pipeline         = VK_NULL_HANDLE;
     VkFormat         depthFormat      = VK_FORMAT_D32_SFLOAT;
 
     /// 最多支持的投射阴影定向光 + 聚光数（决定 directional atlas 层数）。

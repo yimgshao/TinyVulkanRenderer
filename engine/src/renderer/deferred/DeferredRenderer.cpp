@@ -8,8 +8,10 @@
 #include "engine/pso/PsoManager.h"
 #include "engine/shader/ShaderVariantManager.h"
 
+#include <algorithm>
 #include <array>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 namespace engine {
@@ -26,6 +28,68 @@ ShaderModuleConfig MakeGBufferShaderConfig() {
 }
 
 } // anonymous namespace
+
+void DeferredRenderer::validateNewPass(const IRenderPass* pass) const {
+    if (!pass) {
+        throw std::runtime_error("DeferredRenderer: cannot add a null render pass.");
+    }
+    if (pass->passName.empty()) {
+        throw std::runtime_error("DeferredRenderer: render pass name cannot be empty.");
+    }
+    const auto duplicate = std::find_if(
+        passes_.begin(), passes_.end(), [&](const auto& existing) {
+            return existing->passName == pass->passName;
+        });
+    if (duplicate != passes_.end()) {
+        throw std::runtime_error("DeferredRenderer: duplicate render pass name '" +
+                                 pass->passName + "'.");
+    }
+}
+
+void DeferredRenderer::addPass(std::unique_ptr<IRenderPass> pass) {
+    validateNewPass(pass.get());
+    passes_.push_back(std::move(pass));
+}
+
+void DeferredRenderer::insertPassBefore(
+    const std::string& targetPassName,
+    std::unique_ptr<IRenderPass> pass) {
+    validateNewPass(pass.get());
+    const auto target = std::find_if(
+        passes_.begin(), passes_.end(), [&](const auto& existing) {
+            return existing->passName == targetPassName;
+        });
+    if (target == passes_.end()) {
+        throw std::runtime_error("DeferredRenderer: cannot insert pass '" +
+                                 pass->passName + "' before unknown pass '" +
+                                 targetPassName + "'.");
+    }
+
+    IRenderPass* insertedPass = pass.get();
+    IRenderPass* targetPass = target->get();
+    passes_.insert(target, std::move(pass));
+    orderConstraints_.push_back({insertedPass, targetPass});
+}
+
+void DeferredRenderer::insertPassAfter(
+    const std::string& targetPassName,
+    std::unique_ptr<IRenderPass> pass) {
+    validateNewPass(pass.get());
+    const auto target = std::find_if(
+        passes_.begin(), passes_.end(), [&](const auto& existing) {
+            return existing->passName == targetPassName;
+        });
+    if (target == passes_.end()) {
+        throw std::runtime_error("DeferredRenderer: cannot insert pass '" +
+                                 pass->passName + "' after unknown pass '" +
+                                 targetPassName + "'.");
+    }
+
+    IRenderPass* targetPass = target->get();
+    IRenderPass* insertedPass = pass.get();
+    passes_.insert(std::next(target), std::move(pass));
+    orderConstraints_.push_back({targetPass, insertedPass});
+}
 
 // ------------------------------------------------------------------
 // Lifecycle
@@ -61,15 +125,11 @@ void DeferredRenderer::init(const FrameContext& ctx) {
     }
     setupIBLResources(device, descManager, iblTextures_, iblRes_);
 
-    // GBuffer 采样资源 + lighting pipeline layout
-    setupLightingResources(ctx);
-
     // Material set layout 由 MaterialTemplate 根据 shader reflection 创建。
     // 材质层与 forward 完全共用（PbrMaterial + materials/pbr.hlsl），
     // 材质对「画到 swapchain 还是 GBuffer」无感知。
     MaterialTemplateCreateInfo tmplInfo{};
     tmplInfo.variantManager = variantManager;
-    tmplInfo.psoManager     = ctx.psoManager;
     tmplInfo.materialType = materialCfg_.getString("type", "PbrMaterial");
     tmplInfo.materialHeader = materialCfg_.getString("header", "materials/pbr.hlsl");
     tmplInfo.alphaMode      = AlphaMode::Opaque;
@@ -85,30 +145,12 @@ void DeferredRenderer::init(const FrameContext& ctx) {
 }
 
 void DeferredRenderer::cleanup() {
+    orderConstraints_.clear();
     passes_.clear();
 
     if (defaultMaterialTemplate) {
         defaultMaterialTemplate->cleanup(device);
         defaultMaterialTemplate.reset();
-    }
-
-    // GBuffer 采样资源
-    if (gbufferSet.isValid() && descManager) {
-        descManager->free(gbufferLayoutId, gbufferSet);
-        gbufferSet = DescriptorSetHandle::invalid();
-    }
-    gbufferLayoutId = kInvalidLayoutId;
-    if (lightingPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, lightingPipelineLayout, nullptr);
-        lightingPipelineLayout = VK_NULL_HANDLE;
-    }
-    if (gbufferSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, gbufferSetLayout, nullptr);
-        gbufferSetLayout = VK_NULL_HANDLE;
-    }
-    if (gbufferSampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, gbufferSampler, nullptr);
-        gbufferSampler = VK_NULL_HANDLE;
     }
 
     // IBL 资源
@@ -117,11 +159,6 @@ void DeferredRenderer::cleanup() {
     useIBL_ = false;
 
     // 阴影资源
-    if (shadowSet.isValid() && descManager) {
-        descManager->free(shadowLayoutId, shadowSet);
-        shadowSet = DescriptorSetHandle::invalid();
-    }
-    shadowLayoutId = kInvalidLayoutId;
     if (shadowPipelineLayout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
         shadowPipelineLayout = VK_NULL_HANDLE;
@@ -129,10 +166,6 @@ void DeferredRenderer::cleanup() {
     if (shadowSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device, shadowSetLayout, nullptr);
         shadowSetLayout = VK_NULL_HANDLE;
-    }
-    if (shadowSampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, shadowSampler, nullptr);
-        shadowSampler = VK_NULL_HANDLE;
     }
 
     descManager    = nullptr;
@@ -149,22 +182,8 @@ void DeferredRenderer::cleanup() {
 void DeferredRenderer::setupShadows(const FrameContext& ctx) {
     (void)ctx;
 
-    // 1. comparison sampler（硬件 PCF）
-    VkSamplerCreateInfo sci{};
-    sci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sci.magFilter    = VK_FILTER_LINEAR;
-    sci.minFilter    = VK_FILTER_LINEAR;
-    sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.compareEnable = VK_TRUE;
-    sci.compareOp     = VK_COMPARE_OP_LESS_OR_EQUAL;
-    if (vkCreateSampler(device, &sci, nullptr, &shadowSampler) != VK_SUCCESS) {
-        throw std::runtime_error("DeferredRenderer: failed to create shadow sampler.");
-    }
-
-    // 2. shadow set layout（material set 之后的全局 set）：2x SAMPLED_IMAGE + 1x SAMPLER
+    // shadow set layout（material set 之后的全局 set）：
+    // 2x SAMPLED_IMAGE + 1x SAMPLER。Set 的分配、写入和绑定由 RenderGraph 完成。
     std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     for (uint32_t i = 0; i < 3; ++i) {
         bindings[i].binding         = i;
@@ -184,84 +203,6 @@ void DeferredRenderer::setupShadows(const FrameContext& ctx) {
         throw std::runtime_error("DeferredRenderer: failed to create shadow set layout.");
     }
 
-    shadowLayoutId = descManager->registerLayout(shadowSetLayout, /*maxSets=*/1);
-    shadowSet      = descManager->allocate(shadowLayoutId);
-
-    // sampler 对象不变，一次写好；atlas 纹理部分由 GBufferPass /
-    // DeferredLightingPass 按 RGResources 契约在 Execute 中每帧重写。
-    VkDescriptorImageInfo samplerInfo{};
-    samplerInfo.sampler = shadowSampler;
-    descManager->writeImage(shadowLayoutId, shadowSet, 2, samplerInfo,
-                            VK_DESCRIPTOR_TYPE_SAMPLER);
-}
-
-// ------------------------------------------------------------------
-// GBuffer sampling resources（lighting pass 的 set 1 + pipeline layout）
-// ------------------------------------------------------------------
-
-void DeferredRenderer::setupLightingResources(const FrameContext& ctx) {
-    (void)ctx;
-
-    // 1. GBuffer 采样 sampler：全屏 1:1 采样，NEAREST + CLAMP 即可
-    VkSamplerCreateInfo sci{};
-    sci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sci.magFilter    = VK_FILTER_NEAREST;
-    sci.minFilter    = VK_FILTER_NEAREST;
-    sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    if (vkCreateSampler(device, &sci, nullptr, &gbufferSampler) != VK_SUCCESS) {
-        throw std::runtime_error("DeferredRenderer: failed to create gbuffer sampler.");
-    }
-
-    // 2. gbuffer set layout（lighting pass 的 set 1，与 deferred/lighting.hlsl
-    //    的 vk::binding 逐条对齐）：
-    //    binding 0-3: GBuffer0-3 SAMPLED_IMAGE
-    //    binding 4:   GBufferDepth  SAMPLED_IMAGE
-    //    binding 5:   SAMPLER
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
-    for (uint32_t i = 0; i < 6; ++i) {
-        bindings[i].binding         = i;
-        bindings[i].descriptorType  = (i < 5) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-                                              : VK_DESCRIPTOR_TYPE_SAMPLER;
-        bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-    }
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-    layoutInfo.pBindings    = bindings.data();
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
-                                    &gbufferSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("DeferredRenderer: failed to create gbuffer set layout.");
-    }
-
-    gbufferLayoutId = descManager->registerLayout(gbufferSetLayout, /*maxSets=*/1);
-    gbufferSet      = descManager->allocate(gbufferLayoutId);
-
-    // sampler 对象不变，一次写好；GBuffer 纹理部分由 DeferredLightingPass
-    // 按 RGResources 契约在 Execute 中每帧重写。
-    VkDescriptorImageInfo samplerInfo{};
-    samplerInfo.sampler = gbufferSampler;
-    descManager->writeImage(gbufferLayoutId, gbufferSet, 5, samplerInfo,
-                            VK_DESCRIPTOR_TYPE_SAMPLER);
-
-    // 3. lighting pipeline layout = [frame, gbuffer, shadow, ibl]，无 push constant
-    std::array<VkDescriptorSetLayout, 4> setLayouts = {
-        frameSetLayout, gbufferSetLayout, shadowSetLayout, iblRes_.setLayout,
-    };
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
-    pli.pSetLayouts    = setLayouts.data();
-    if (vkCreatePipelineLayout(device, &pli, nullptr,
-                               &lightingPipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error(
-            "DeferredRenderer: failed to create lighting pipeline layout.");
-    }
 }
 
 // ------------------------------------------------------------------
@@ -269,9 +210,8 @@ void DeferredRenderer::setupLightingResources(const FrameContext& ctx) {
 // ------------------------------------------------------------------
 
 void DeferredRenderer::createDefaultPasses(const FrameContext& ctx) {
-    // ShadowPass：VS-only 深度 PSO，经 PsoManager 创建（无材质），
-    // 与 ForwardRenderer::createDefaultPasses 相同。
-    VkPushConstantRange pcRange{VK_SHADER_STAGE_VERTEX_BIT, 0, 80};
+    // ShadowPass：VS-only 深度 pipeline layout；Shader/PSO 由 RenderGraph 创建。
+    VkPushConstantRange pcRange{VK_SHADER_STAGE_VERTEX_BIT, 0, 96};
     VkPipelineLayoutCreateInfo pli{};
     pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pli.setLayoutCount         = 0;
@@ -282,24 +222,8 @@ void DeferredRenderer::createDefaultPasses(const FrameContext& ctx) {
         throw std::runtime_error("DeferredRenderer: failed to create shadow pipeline layout.");
     }
 
-    GraphicsPSODesc shadowPsoDesc{};
-    shadowPsoDesc.shaderConfig.moduleName = "common/shadow_depth";
-    shadowPsoDesc.shaderConfig.stages     = {ShaderStage::Vertex};
-    shadowPsoDesc.variantKey              = {};   // 无材质类型
-    shadowPsoDesc.materialHeader          = "";   // 独立编译，无材质头
-    shadowPsoDesc.vertexLayoutName        = "StaticMesh";
-    shadowPsoDesc.state                   = PipelineStateDesc::Default();
-    shadowPsoDesc.state.depthBiasEnable   = VK_TRUE;
-    shadowPsoDesc.colorCount              = 0;
-    shadowPsoDesc.depthFormat             = VK_FORMAT_D32_SFLOAT;
-    shadowPsoDesc.msaaSamples             = VK_SAMPLE_COUNT_1_BIT;
-    shadowPsoDesc.layout                  = shadowPipelineLayout;
-    shadowPsoDesc.passName                = "Shadow";
-
     auto shadow = std::make_unique<ShadowPass>();
-    shadow->device         = device;
     shadow->pipelineLayout = shadowPipelineLayout;
-    shadow->pipeline       = ctx.psoManager->getOrCreate(shadowPsoDesc);
     shadow->depthFormat    = VK_FORMAT_D32_SFLOAT;
     shadow->directionalRes = rendererCfg_.getInt("shadow.directionalRes", 2048);
     shadow->pointRes       = rendererCfg_.getInt("shadow.pointRes", 512);
@@ -311,33 +235,14 @@ void DeferredRenderer::createDefaultPasses(const FrameContext& ctx) {
     auto gbuffer = std::make_unique<GBufferPass>();
     gbuffer->passName        = "GBuffer";
     gbuffer->pipelineLayout  = defaultMaterialTemplate->getPipelineLayout();
-    gbuffer->device          = device;
     gbuffer->depthFormat     = VK_FORMAT_D32_SFLOAT;
     gbuffer->msaaSamples     = VK_SAMPLE_COUNT_1_BIT;
-    gbuffer->buildExtent     = ctx.renderExtent;
     gbuffer->shaderConfig    = MakeGBufferShaderConfig();
-    // 阴影采样接线（RGResources 契约的 descriptor 由 pass 每帧重写）
-    gbuffer->descManager     = descManager;
-    gbuffer->shadowSet       = shadowSet;
-    gbuffer->shadowLayoutId  = shadowLayoutId;
-    gbuffer->shadowSetIndex  = defaultMaterialTemplate->getMaterialSetIndex() + 1;
+    gbuffer->materialHeader  = defaultMaterialTemplate->getMaterialHeader();
 
-    // DeferredLightingPass：全屏光照，
-    // pipeline layout = [frame, gbuffer, shadow, ibl]。
+    // DeferredLightingPass：全屏光照，PipelineLayout 由 Shader 反射生成。
     auto lighting = std::make_unique<DeferredLightingPass>();
     lighting->passName        = "DeferredLighting";
-    lighting->pipelineLayout  = lightingPipelineLayout;
-    lighting->device          = device;
-    lighting->colorFormat     = ctx.swapchainFormat;
-    lighting->swapchainHandle = ctx.hSwapchain;
-    lighting->buildExtent     = ctx.renderExtent;
-    lighting->descManager     = descManager;
-    lighting->gbufferSet      = gbufferSet;
-    lighting->gbufferLayoutId = gbufferLayoutId;
-    lighting->gbufferSetIndex = 1;
-    lighting->shadowSet       = shadowSet;
-    lighting->shadowLayoutId  = shadowLayoutId;
-    lighting->shadowSetIndex  = 2;
     lighting->iblSet          = iblRes_.set;
     lighting->iblSetIndex     = 3;
     lighting->useIBL          = useIBL_;
@@ -355,10 +260,14 @@ void DeferredRenderer::createDefaultPasses(const FrameContext& ctx) {
 // ------------------------------------------------------------------
 
 void DeferredRenderer::buildRenderGraph(RenderGraph& rg,
-                                        const FrameContext& ctx) {
+                                        const RenderGraphBuildContext& ctx) {
     for (auto& pass : passes_) {
-        pass->OnBuildRenderGraph(ctx);
-        rg.AddPass(pass.get());
+        rg.AddPass(pass.get(), ctx);
+    }
+    for (const auto& constraint : orderConstraints_) {
+        if (constraint.before->enabled && constraint.after->enabled) {
+            rg.AddExecutionDependency(constraint.before, constraint.after);
+        }
     }
 }
 

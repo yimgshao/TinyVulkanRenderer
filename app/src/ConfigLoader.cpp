@@ -32,9 +32,25 @@ engine::Config jsonToConfig(const nlohmann::json& j, const std::string& ctx) {
             cfg.set(key, val.get<double>());
         } else if (val.is_string()) {
             cfg.set(key, val.get<std::string>());
+        } else if (val.is_array()) {
+            engine::Config::StringList values;
+            bool allStrings = true;
+            for (const auto& item : val) {
+                if (!item.is_string()) {
+                    allStrings = false;
+                    break;
+                }
+                values.push_back(item.get<std::string>());
+            }
+            if (allStrings) {
+                cfg.set(key, values);
+            } else {
+                std::cerr << "[Config] skip non-string array at '" << ctx
+                          << "." << key << "'.\n";
+            }
         } else {
             std::cerr << "[Config] skip unsupported value at '" << ctx
-                      << "." << key << "' (array/null not supported).\n";
+                      << "." << key << "'.\n";
         }
     }
     return cfg;
@@ -116,6 +132,15 @@ engine::Config ConfigLoader::load(const std::string& mainJsonPath) {
     const std::string iblPath = root.getString("ibl.path", "");
     if (!iblPath.empty()) {
         root.set("ibl.path", resolvePath(baseDir, iblPath));
+    }
+
+    // shaderDirs：每个目录相对入口配置文件解析，保持数组顺序。
+    auto shaderDirs = root.getStringList("shaderDirs");
+    for (auto& dir : shaderDirs) {
+        dir = resolvePath(baseDir, dir);
+    }
+    if (!shaderDirs.empty()) {
+        root.set("shaderDirs", shaderDirs);
     }
 
     return root;

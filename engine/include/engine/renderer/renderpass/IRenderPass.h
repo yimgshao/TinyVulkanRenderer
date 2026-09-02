@@ -2,17 +2,26 @@
 
 #include "engine/renderer/rendergraph/RenderGraphBuilder.h"
 #include "engine/renderer/rendergraph/RGResources.h"
+#include "engine/renderer/RenderGraphBuildContext.h"
 #include "engine/renderer/FrameContext.h"
+#include "engine/shader/ShaderParam.h"
 
 #include <vulkan/vulkan.h>
+#include <memory>
+#include <string>
 
 namespace engine {
+
+struct PassPipelineRuntime;
 
 class IRenderPass {
 public:
     virtual ~IRenderPass() = default;
 
-    virtual void Setup(RenderGraphBuilder& builder) = 0;
+    /// 声明本 pass 的资源读写与 attachment。
+    /// 每次 RenderGraph 重建时调用；ctx 仅包含构建期状态。
+    virtual void Setup(RenderGraphBuilder& builder,
+                       const RenderGraphBuildContext& ctx) = 0;
 
     /**
      * 录制本 pass 的渲染命令。
@@ -27,12 +36,24 @@ public:
     virtual void Execute(VkCommandBuffer cmd, const FrameContext& frame,
                          const RGResources& resources) = 0;
 
-    /// 在 buildRenderGraph 中被调用，用于更新 swapchain 相关字段等构建期状态。
-    /// 默认空实现：无需更新的 pass 不用重写。
-    virtual void OnBuildRenderGraph(const FrameContext& ctx) { (void)ctx; }
-
     std::string passName;
     bool enabled = true;
+
+protected:
+    /// 通过 RenderGraph 为当前 pass 建立的统一 Pipeline Runtime 选择并绑定变体。
+    /// 普通 pass 无需调用；RenderGraph 会自动绑定默认变体。材质 pass 在材质
+    /// 改变时调用本函数选择同一 pass shader 的材质变体。
+    VkPipeline BindShaderVariant(
+        VkCommandBuffer cmd,
+        const ShaderVariantKey& key = {},
+        const ShaderParamSet& materialParams = {},
+        const std::string& materialHeader = "") const;
+
+    VkPipelineLayout GetPipelineLayout() const;
+
+private:
+    friend class RenderGraph;
+    std::shared_ptr<PassPipelineRuntime> pipelineRuntime_;
 };
 
 } // namespace engine

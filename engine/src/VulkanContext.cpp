@@ -161,18 +161,9 @@ void VulkanContext::createLogicalDevice(VkSurfaceKHR surface) {
     // Enable Vulkan 1.3 features
     VkPhysicalDeviceVulkan13Features vulkan13Features{};
     vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-
-    // Enable Vulkan 1.3 dynamic rendering feature
-    VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{};
-    dynamicRenderingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
-    dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
-    vulkan13Features.pNext = &dynamicRenderingFeatures;
-
-    // Enable synchronization2 feature (required by RenderGraph barrier system)
-    VkPhysicalDeviceSynchronization2Features sync2Features{};
-    sync2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
-    sync2Features.synchronization2 = VK_TRUE;
-    dynamicRenderingFeatures.pNext = &sync2Features;
+    vulkan13Features.dynamicRendering = VK_TRUE;
+    // Required by the RenderGraph barrier system.
+    vulkan13Features.synchronization2 = VK_TRUE;
 
     // Enable Vulkan 1.2 features (bufferDeviceAddress required by VK_EXT_descriptor_buffer,
     // shaderOutputLayer required by shadow map SV_RenderTargetArrayIndex)
@@ -180,7 +171,7 @@ void VulkanContext::createLogicalDevice(VkSurfaceKHR surface) {
     vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     vulkan12Features.bufferDeviceAddress = VK_TRUE;
     vulkan12Features.shaderOutputLayer = VK_TRUE;
-    sync2Features.pNext = &vulkan12Features;
+    vulkan13Features.pNext = &vulkan12Features;
 
     // Enable descriptor buffer feature
     VkPhysicalDeviceDescriptorBufferFeaturesEXT dbFeatures{};

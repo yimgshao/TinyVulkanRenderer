@@ -22,9 +22,16 @@ ShaderVariantManager& ShaderVariantManager::operator=(ShaderVariantManager&&) no
 // 初始化
 // -------------------------------------------------------------------------
 
+bool ShaderVariantManager::Init(
+    const std::vector<std::filesystem::path>& shaderSearchDirs,
+    bool enableDebugInfo) {
+    return compiler_->Init(shaderSearchDirs, enableDebugInfo);
+}
+
 bool ShaderVariantManager::Init(const std::filesystem::path& shaderSearchDir,
-                                 bool enableDebugInfo) {
-    return compiler_->Init(shaderSearchDir, enableDebugInfo);
+                                bool enableDebugInfo) {
+    return Init(std::vector<std::filesystem::path>{shaderSearchDir},
+                enableDebugInfo);
 }
 
 void ShaderVariantManager::Cleanup() {

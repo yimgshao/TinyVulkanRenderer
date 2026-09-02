@@ -11,8 +11,8 @@
 // Set 2 — Shadow atlas textures and comparison sampler
 // =============================================================================
 
-[[vk::binding(0, 2)]] Texture2DArray         gShadowDir;
-[[vk::binding(1, 2)]] Texture2DArray         gShadowPoint;
+[[vk::binding(0, 2)]] Texture2DArray         ShadowAtlas_Directional;
+[[vk::binding(1, 2)]] Texture2DArray         ShadowAtlas_Point;
 [[vk::binding(2, 2)]] SamplerComparisonState gShadowSampler;
 
 // =============================================================================
@@ -32,7 +32,7 @@ float calcShadowDirectional(float3 worldPos, GPULight light)
 
     if (any(uv < 0.0) || any(uv > 1.0)) return 1.0;
 
-    return gShadowDir.SampleCmp(gShadowSampler,
+    return ShadowAtlas_Directional.SampleCmp(gShadowSampler,
         float3(uv, float(light.shadowBaseLayer)),
         refDepth - light.shadowBias);
 }
@@ -81,7 +81,7 @@ float calcShadowPoint(float3 worldPos, GPULight light)
     float refDepth = ndcZ * 0.5 + 0.5;
 
     int layer = light.shadowBaseLayer + face;
-    return gShadowPoint.SampleCmp(gShadowSampler,
+    return ShadowAtlas_Point.SampleCmp(gShadowSampler,
         float3(uv, float(layer)),
         refDepth - light.shadowBias);
 }

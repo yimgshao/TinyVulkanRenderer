@@ -6,15 +6,12 @@ ImGuiPass::ImGuiPass() {
     passName = "ImGui";
 }
 
-void ImGuiPass::OnBuildRenderGraph(const engine::FrameContext& ctx) {
-    swapchainHandle = ctx.hSwapchain;
-}
-
-void ImGuiPass::Setup(engine::RenderGraphBuilder& builder) {
+void ImGuiPass::Setup(engine::RenderGraphBuilder& builder,
+                      const engine::RenderGraphBuildContext& ctx) {
     engine::AttachmentDesc colorDesc{};
     colorDesc.loadOp  = VK_ATTACHMENT_LOAD_OP_LOAD;
     colorDesc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    builder.WriteColor(swapchainHandle, colorDesc);
+    builder.WriteColor(ctx.hSwapchain, colorDesc);
 }
 
 void ImGuiPass::Execute(VkCommandBuffer cmd, const engine::FrameContext& frame,

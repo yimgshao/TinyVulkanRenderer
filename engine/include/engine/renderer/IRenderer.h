@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/renderer/FrameContext.h"
+#include "engine/renderer/RenderGraphBuildContext.h"
 #include "engine/scene/FrameUBO.h"
 
 namespace engine {
@@ -18,11 +19,11 @@ class RenderGraph;
  *
  * 调用顺序（RenderModule 内部）：
  *
- *   setRenderer()
- *     -> renderer->init(ctx)              // 一次性资源
+ *   renderer->init(ctx)                   // 调用方创建一次性资源
+ *   setRenderer()                         // 所有权转移
  *
  *   buildGraph()
- *     -> renderer->buildRenderGraph(rg, ctx)
+ *     -> renderer->buildRenderGraph(rg, buildCtx)
  *
  *   每帧 drawFrame()：
  *     -> renderer->onFrame(ctx)           // 注入 frameIndex / scene / ...
@@ -30,7 +31,7 @@ class RenderGraph;
  *
  *   swapchain 重建：
  *     -> renderGraph.Cleanup()
- *     -> renderer->buildRenderGraph(rg, ctx)
+ *     -> renderer->buildRenderGraph(rg, buildCtx)
  *
  *   cleanup():
  *     -> renderer->cleanup()
@@ -51,7 +52,8 @@ public:
 
     /// 构建该管线的 RenderGraph 拓扑（注册 pass、声明输入输出）。
     /// 在 init 之后以及每次 swapchain 重建时被调用。
-    virtual void buildRenderGraph(RenderGraph& rg, const FrameContext& ctx) = 0;
+    virtual void buildRenderGraph(RenderGraph& rg,
+                                  const RenderGraphBuildContext& ctx) = 0;
 
     /// 每帧 RenderGraph 执行前调用，向已注册 pass 注入可变状态。
     /// 默认空实现：对于完全无状态的 pipeline 可不重写。

@@ -13,6 +13,8 @@
 
 #include <stdexcept>
 #include <iostream>
+#include <filesystem>
+#include <vector>
 
 namespace app {
 
@@ -39,9 +41,13 @@ void Application::run(const char* configPath) {
     context.createDevice(window.getSurface());
 
     // 5. Initialize render module (swapchain / sync / global services)
+    std::vector<std::filesystem::path> userShaderDirs;
+    for (const auto& dir : config.getStringList("shaderDirs")) {
+        userShaderDirs.emplace_back(dir);
+    }
     renderModule.init(&context, window.getSurface(), [&]() {
         return window.getFramebufferSize();
-    });
+    }, userShaderDirs);
 
     // 6. Create renderer, load scene, compile render graph
     setPipeline(activePipeline);

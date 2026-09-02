@@ -6,6 +6,8 @@
 #include <vulkan/vulkan.h>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace engine {
@@ -153,6 +155,10 @@ struct DescriptorSetHandle {
  */
 class DescriptorSetManager {
 public:
+    struct RegisteredLayout {
+        LayoutId id = kInvalidLayoutId;
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    };
     DescriptorSetManager() = default;
     ~DescriptorSetManager() = default;
 
@@ -165,6 +171,12 @@ public:
     /// 注册一个 descriptor set layout，返回它的 LayoutId（同时即 bufferIndex）。
     /// 同一个 layout 重复注册会得到不同 LayoutId（认为是独立的池子）。
     LayoutId registerLayout(VkDescriptorSetLayout layout, uint32_t maxSets);
+
+    /// 按完整 binding 签名创建或复用由 manager 拥有的 descriptor layout。
+    /// RenderGraph 重建时复用同一 LayoutId，避免重复创建 descriptor heap。
+    RegisteredLayout getOrCreateLayout(
+        const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+        uint32_t maxSets = 64);
 
     DescriptorSetHandle allocate(LayoutId id);
     void free(LayoutId id, DescriptorSetHandle handle);
@@ -190,6 +202,7 @@ public:
 private:
     struct LayoutEntry {
         VkDescriptorSetLayout                 layout = VK_NULL_HANDLE;
+        bool                                  ownsLayout = false;
         std::unique_ptr<DescriptorBufferHeap> heap;
         std::unique_ptr<DescriptorSetWriter>  writer;
     };
@@ -199,6 +212,7 @@ private:
 
     // 按 LayoutId 直接索引（LayoutId 的 underlying = vector index）
     std::vector<LayoutEntry> layouts;
+    std::unordered_map<std::string, uint32_t> cachedLayoutIds;
 };
 
 } // namespace engine

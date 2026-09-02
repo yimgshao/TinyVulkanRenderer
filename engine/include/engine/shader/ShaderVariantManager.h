@@ -121,6 +121,8 @@ public:
     // 初始化
     // -------------------------------------------------------------------------
 
+    bool Init(const std::vector<std::filesystem::path>& shaderSearchDirs,
+              bool enableDebugInfo = false);
     bool Init(const std::filesystem::path& shaderSearchDir,
               bool enableDebugInfo = false);
     void Cleanup();

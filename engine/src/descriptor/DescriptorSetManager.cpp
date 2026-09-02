@@ -1,6 +1,7 @@
 #include "engine/descriptor/DescriptorSetManager.h"
 
 #include <stdexcept>
+#include <sstream>
 
 namespace engine {
 namespace ext {
@@ -54,8 +55,12 @@ void DescriptorSetManager::cleanup() {
         if (entry.heap)   entry.heap->cleanup();
         entry.writer.reset();
         entry.heap.reset();
+        if (entry.ownsLayout && entry.layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, entry.layout, nullptr);
+        }
     }
     layouts.clear();
+    cachedLayoutIds.clear();
     device = VK_NULL_HANDLE;
     physicalDevice = VK_NULL_HANDLE;
 }
@@ -73,6 +78,47 @@ LayoutId DescriptorSetManager::registerLayout(VkDescriptorSetLayout layout,
 
     layouts.push_back(std::move(entry));
     return LayoutId{id};
+}
+
+DescriptorSetManager::RegisteredLayout DescriptorSetManager::getOrCreateLayout(
+    const std::vector<VkDescriptorSetLayoutBinding>& bindings,
+    uint32_t maxSets) {
+    std::ostringstream key;
+    key << maxSets << ':';
+    for (const auto& b : bindings) {
+        key << b.binding << ',' << static_cast<uint32_t>(b.descriptorType) << ','
+            << b.descriptorCount << ',' << b.stageFlags << ';';
+    }
+
+    const std::string signature = key.str();
+    if (auto it = cachedLayoutIds.find(signature); it != cachedLayoutIds.end()) {
+        const uint32_t index = it->second;
+        return {LayoutId{index}, layouts[index].layout};
+    }
+
+    VkDescriptorSetLayoutCreateInfo info{};
+    info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    info.bindingCount = static_cast<uint32_t>(bindings.size());
+    info.pBindings    = bindings.data();
+
+    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(device, &info, nullptr, &layout) != VK_SUCCESS) {
+        throw std::runtime_error(
+            "DescriptorSetManager::getOrCreateLayout: failed to create layout");
+    }
+
+    const uint32_t index = static_cast<uint32_t>(layouts.size());
+    LayoutEntry entry;
+    entry.layout     = layout;
+    entry.ownsLayout = true;
+    entry.heap       = std::make_unique<DescriptorBufferHeap>();
+    entry.heap->init(device, physicalDevice, layout, maxSets, index);
+    entry.writer = std::make_unique<DescriptorSetWriter>();
+    entry.writer->init(device, physicalDevice, layout);
+    layouts.push_back(std::move(entry));
+    cachedLayoutIds.emplace(signature, index);
+    return {LayoutId{index}, layout};
 }
 
 DescriptorSetHandle DescriptorSetManager::allocate(LayoutId id) {

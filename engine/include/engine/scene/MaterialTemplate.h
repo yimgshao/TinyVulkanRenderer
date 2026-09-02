@@ -13,7 +13,6 @@
 namespace engine {
 
 class ShaderVariantManager;
-class PsoManager;
 struct ShaderReflection;
 
 enum class AlphaMode : uint32_t { Opaque = 0, Mask = 1, Blend = 2 };
@@ -23,7 +22,6 @@ enum class AlphaMode : uint32_t { Opaque = 0, Mask = 1, Blend = 2 };
  */
 struct MaterialTemplateCreateInfo {
     ShaderVariantManager* variantManager = nullptr;
-    PsoManager*           psoManager     = nullptr;
     std::string           materialType;
     AlphaMode             alphaMode      = AlphaMode::Opaque;
 
@@ -49,27 +47,14 @@ struct MaterialTemplateCreateInfo {
  * 不绑定任何 pass 的 shader 配置：pass 在请求 PSO 时传入自己的
  * ShaderModuleConfig，材质头文件由本模板注入，编译器在编译期配对。
  *
- * PSO 的组装与缓存已下沉到引擎级 PsoManager，本类只负责把材质特有
- * 信息（materialType / materialHeader / alphaMode 状态修正）填进
- * GraphicsPSODesc 并转发。
+ * Shader/PSO 的组装与缓存由 RenderGraph 的 pass Pipeline Runtime 统一处理。
+ * 本类只持有材质资源接口和与它兼容的 Pipeline Layout。
  */
 class MaterialTemplate {
 public:
     void init(VkDevice device, VkPhysicalDevice physicalDevice,
               const MaterialTemplateCreateInfo& createInfo);
     void cleanup(VkDevice device);
-
-    VkPipeline getOrCreatePipeline(VkDevice device,
-                                   const ShaderModuleConfig& shaderConfig,
-                                   const std::string&     passName,
-                                   const PipelineStateDesc& state,
-                                   const ShaderVariantKey& shaderVariant,
-                                   const ShaderParamSet&   materialParams,
-                                   const ShaderParamSet&   passParams,
-                                   uint32_t colorAttachmentCount,
-                                   const VkFormat* pColorFormats,
-                                   VkFormat depthFormat,
-                                   VkSampleCountFlagBits msaaSamples);
 
     VkDescriptorSetLayout getSetLayout()        const { return setLayout; }
     VkPipelineLayout      getPipelineLayout()   const { return pipelineLayout; }
@@ -89,7 +74,6 @@ private:
     VkDevice              device          = VK_NULL_HANDLE;
     VkPhysicalDevice      physicalDevice  = VK_NULL_HANDLE;
     DescriptorSetManager* descManager     = nullptr;
-    PsoManager*           psoManager      = nullptr;
 
     VkDescriptorSetLayout setLayout        = VK_NULL_HANDLE;
     VkDescriptorSetLayout dummySetLayout   = VK_NULL_HANDLE;

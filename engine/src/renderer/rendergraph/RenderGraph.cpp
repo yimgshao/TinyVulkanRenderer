@@ -1,7 +1,9 @@
 // engine/src/renderer/rendergraph/RenderGraph.cpp
 #include "engine/renderer/rendergraph/RenderGraph.h"
 #include "engine/VulkanUtils.h"
+#include "engine/pso/PsoManager.h"
 
+#include <algorithm>
 #include <array>
 #include <iostream>
 #include <optional>
@@ -25,15 +27,66 @@ void RenderGraphBuilder::WriteColor(RGTextureHandle handle, const AttachmentDesc
     colorOutputs.push_back({handle, desc});
 }
 
+void RenderGraphBuilder::WriteColorPreserve(RGTextureHandle handle) {
+    AttachmentDesc desc{};
+    desc.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    WriteColor(handle, desc);
+}
+
 void RenderGraphBuilder::WriteDepth(RGTextureHandle handle, const AttachmentDesc& desc) {
     depthOutputs.push_back({handle, desc});
 }
 
-void RenderGraphBuilder::ReadTexture(RGTextureHandle handle, VkPipelineStageFlags2 stage, VkAccessFlags2 access) {
-    reads.push_back({handle, stage, access});
+RGTextureHandle RenderGraphBuilder::ReadTexture(const std::string& resourceName) {
+    RGTextureHandle handle = FindTexture(resourceName);
+    if (handle == kInvalidRGTextureHandle) {
+        throw std::runtime_error("RenderGraphBuilder::ReadTexture: resource '" +
+                                 resourceName + "' does not exist.");
+    }
+    reads.push_back({handle, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, resourceName});
+    return handle;
 }
 
-RGTextureHandle RenderGraphBuilder::GetTexture(const std::string& name) const {
+void RenderGraphBuilder::SetShader(const std::string& moduleName) {
+    shaderDesc.shaderConfig.moduleName = moduleName;
+    shaderDesc.declared = true;
+}
+
+void RenderGraphBuilder::SetShader(const ShaderModuleConfig& config) {
+    shaderDesc.shaderConfig = config;
+    shaderDesc.declared = true;
+}
+
+void RenderGraphBuilder::SetPassParams(const ShaderParamSet& params) {
+    shaderDesc.passParams = params;
+}
+
+void RenderGraphBuilder::SetPipelineState(const PipelineStateDesc& state) {
+    shaderDesc.pipelineState = state;
+}
+
+void RenderGraphBuilder::SetVertexLayout(const std::string& layoutName) {
+    shaderDesc.vertexLayout = layoutName;
+}
+
+void RenderGraphBuilder::SetPipelineLayout(VkPipelineLayout layout) {
+    shaderDesc.pipelineLayout = layout;
+}
+
+void RenderGraphBuilder::SetMaterialHeader(const std::string& header) {
+    shaderDesc.materialHeader = header;
+}
+
+void RenderGraphBuilder::SetMsaaSamples(VkSampleCountFlagBits samples) {
+    shaderDesc.msaaSamples = samples;
+}
+
+void RenderGraphBuilder::SetAutoBindShader(bool enabled) {
+    shaderDesc.autoBind = enabled;
+}
+
+RGTextureHandle RenderGraphBuilder::FindTexture(const std::string& name) const {
     if (!owner) return kInvalidRGTextureHandle;
     auto it = owner->nameToHandle.find(name);
     if (it != owner->nameToHandle.end()) {
@@ -67,8 +120,38 @@ static VkImageAspectFlags GetAspectFlags(VkFormat format) {
 // RenderGraph
 // ------------------------------------------------------------------
 
-void RenderGraph::Init(VulkanContext* ctx) {
+void RenderGraph::Init(VulkanContext* ctx, PsoManager* manager,
+                       ShaderVariantManager* variants,
+                       DescriptorSetManager* descriptors,
+                       VkDescriptorSetLayout frameLayout) {
     context = ctx;
+    psoManager = manager;
+    variantManager = variants;
+    descManager = descriptors;
+    frameSetLayout = frameLayout;
+    if (context && defaultPassSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo info{};
+        info.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter    = VK_FILTER_LINEAR;
+        info.minFilter    = VK_FILTER_LINEAR;
+        info.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(context->device, &info, nullptr,
+                            &defaultPassSampler) != VK_SUCCESS) {
+            throw std::runtime_error("RenderGraph: failed to create default pass sampler.");
+        }
+
+        info.mipmapMode    = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.compareEnable = VK_TRUE;
+        info.compareOp     = VK_COMPARE_OP_LESS_OR_EQUAL;
+        if (vkCreateSampler(context->device, &info, nullptr,
+                            &defaultComparisonSampler) != VK_SUCCESS) {
+            throw std::runtime_error(
+                "RenderGraph: failed to create default comparison sampler.");
+        }
+    }
     // 预留 [0] 作为 sentinel
     if (textureInfos.empty()) {
         textureInfos.emplace_back();
@@ -79,7 +162,34 @@ void RenderGraph::Init(VulkanContext* ctx) {
 
 void RenderGraph::Cleanup() {
     FreePhysicalResources();
+    if (context) {
+        for (auto& node : passes) {
+            if (descManager) {
+                for (auto& resourceSet : node.autoResourceSets) {
+                    if (resourceSet.set.isValid() &&
+                        resourceSet.layoutId != kInvalidLayoutId) {
+                        descManager->free(resourceSet.layoutId, resourceSet.set);
+                    }
+                }
+            }
+            if (node.pass) node.pass->pipelineRuntime_.reset();
+            if (node.ownsPipelineLayout && node.pipelineRuntime &&
+                node.pipelineRuntime->baseDesc.layout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(context->device,
+                    node.pipelineRuntime->baseDesc.layout, nullptr);
+            }
+        }
+        if (defaultPassSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(context->device, defaultPassSampler, nullptr);
+            defaultPassSampler = VK_NULL_HANDLE;
+        }
+        if (defaultComparisonSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(context->device, defaultComparisonSampler, nullptr);
+            defaultComparisonSampler = VK_NULL_HANDLE;
+        }
+    }
     passes.clear();
+    explicitDependencies_.clear();
     executionOrder_.clear();
     adjacency_.clear();
     inDegree_.clear();
@@ -92,6 +202,10 @@ void RenderGraph::Cleanup() {
     colorAttachmentScratch.clear();
     presentBarrierScratch.clear();
     context = nullptr;
+    psoManager = nullptr;
+    variantManager = nullptr;
+    descManager = nullptr;
+    frameSetLayout = VK_NULL_HANDLE;
 }
 
 RGTextureHandle RenderGraph::AllocTextureHandle() {
@@ -180,20 +294,276 @@ const RGTextureDesc& RGResources::GetDesc(RGTextureHandle handle) const {
     return graph ? graph->GetTextureDesc(handle) : kInvalidDesc;
 }
 
-void RenderGraph::AddPass(IRenderPass* pass) {
+void RenderGraph::AddPass(IRenderPass* pass,
+                          const RenderGraphBuildContext& ctx) {
     if (!pass || !pass->enabled) return;
+    if (pass->passName.empty()) {
+        throw std::runtime_error("RenderGraph: pass name cannot be empty.");
+    }
+    const auto duplicate = std::find_if(
+        passes.begin(), passes.end(), [&](const RGPassNode& node) {
+            return node.pass && node.pass->passName == pass->passName;
+        });
+    if (duplicate != passes.end()) {
+        throw std::runtime_error("RenderGraph: duplicate pass name '" +
+                                 pass->passName + "'.");
+    }
 
     RGPassNode node;
     node.pass = pass;
     node.builder.SetOwner(this);
-    node.pass->Setup(node.builder);
+    node.pass->Setup(node.builder, ctx);
     passes.push_back(std::move(node));
+}
+
+void RenderGraph::AddExecutionDependency(IRenderPass* before,
+                                         IRenderPass* after) {
+    if (!before || !after || before == after) {
+        throw std::runtime_error(
+            "RenderGraph: invalid explicit pass execution dependency.");
+    }
+
+    const auto isRegistered = [&](IRenderPass* pass) {
+        return std::any_of(passes.begin(), passes.end(),
+                           [&](const RGPassNode& node) {
+                               return node.pass == pass;
+                           });
+    };
+    if (!isRegistered(before) || !isRegistered(after)) {
+        throw std::runtime_error(
+            "RenderGraph: explicit execution dependency references an "
+            "unregistered or disabled pass.");
+    }
+
+    const auto duplicate = std::any_of(
+        explicitDependencies_.begin(), explicitDependencies_.end(),
+        [&](const ExplicitPassDependency& dependency) {
+            return dependency.before == before && dependency.after == after;
+        });
+    if (!duplicate) {
+        explicitDependencies_.push_back({before, after});
+    }
 }
 
 void RenderGraph::Compile() {
     FreePhysicalResources();
     AllocatePhysicalResources();
+    BuildPassPipelines();
     BuildDependencyGraph();
+}
+
+void RenderGraph::BuildPassPipelines() {
+    if (!context || !psoManager) return;
+
+    for (auto& node : passes) {
+        const PassShaderDesc& shader = node.builder.GetShaderDesc();
+        if (!node.pass || !shader.declared) continue;
+        if (shader.shaderConfig.moduleName.empty()) {
+            throw std::runtime_error("RenderGraph: pass '" + node.pass->passName +
+                                     "' declared an empty shader module.");
+        }
+
+        auto runtime = std::make_shared<PassPipelineRuntime>();
+        runtime->psoManager = psoManager;
+
+        GraphicsPSODesc& desc = runtime->baseDesc;
+        desc.shaderConfig     = shader.shaderConfig;
+        desc.passParams       = shader.passParams;
+        desc.materialHeader   = shader.materialHeader;
+        desc.vertexLayoutName = shader.vertexLayout;
+        desc.state            = shader.pipelineState;
+        desc.msaaSamples      = shader.msaaSamples;
+        desc.passName         = node.pass->passName;
+
+        for (const auto& output : node.builder.GetColorOutputs()) {
+            if (desc.colorCount >= GraphicsPSODesc::kMaxColorAttachments) break;
+            desc.colorFormats[desc.colorCount++] = GetTextureDesc(output.handle).format;
+        }
+        const auto& depths = node.builder.GetDepthOutputs();
+        if (!depths.empty()) {
+            desc.depthFormat = GetTextureDesc(depths.front().handle).format;
+        }
+
+        desc.layout = shader.pipelineLayout;
+        std::shared_ptr<const ShaderVariantBytecode> compiled;
+        if (desc.layout == VK_NULL_HANDLE || !node.builder.GetReads().empty()) {
+            ShaderVariantKey key{};
+            ShaderParamSet emptyMaterialParams;
+            compiled = variantManager->GetOrCreateVariant(
+                shader.shaderConfig, key, emptyMaterialParams,
+                shader.passParams, shader.materialHeader);
+            if (!compiled) {
+                throw std::runtime_error("RenderGraph: failed to compile shader for pass '" +
+                                         node.pass->passName + "'.");
+            }
+
+        }
+
+        if (compiled && !node.builder.GetReads().empty()) {
+            for (const auto& reflectedSet : compiled->reflection.sets) {
+                const bool setHasDeclaredRead = std::any_of(
+                    reflectedSet.bindings.begin(), reflectedSet.bindings.end(),
+                    [&](const DescriptorBindingDesc& reflected) {
+                        return std::any_of(
+                            node.builder.GetReads().begin(),
+                            node.builder.GetReads().end(),
+                            [&](const PassResourceRead& read) {
+                                return read.resourceName == reflected.name;
+                            });
+                    });
+                if (!setHasDeclaredRead) continue;
+
+                RGPassNode::AutoResourceSet resourceSet{};
+                resourceSet.setIndex = reflectedSet.setIndex;
+                std::vector<VkDescriptorSetLayoutBinding> layoutBindings;
+                layoutBindings.reserve(reflectedSet.bindings.size());
+
+                for (const auto& reflected : reflectedSet.bindings) {
+                    const bool isTexture =
+                        reflected.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                        reflected.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    const bool isSampler =
+                        reflected.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER;
+                    if (!isTexture && !isSampler) {
+                        throw std::runtime_error(
+                            "RenderGraph: descriptor set " +
+                            std::to_string(reflectedSet.setIndex) + " in pass '" +
+                            node.pass->passName + "' mixes graph textures with unsupported "
+                            "descriptor types.");
+                    }
+
+                    VkDescriptorSetLayoutBinding binding{};
+                    binding.binding         = reflected.binding;
+                    binding.descriptorType  = reflected.descriptorType;
+                    binding.descriptorCount = reflected.descriptorCount;
+                    binding.stageFlags      = reflected.stageFlags;
+                    layoutBindings.push_back(binding);
+
+                    if (isTexture) {
+                        auto read = std::find_if(
+                            node.builder.GetReads().begin(),
+                            node.builder.GetReads().end(),
+                            [&](const PassResourceRead& item) {
+                                return item.resourceName == reflected.name;
+                            });
+                        if (read == node.builder.GetReads().end()) {
+                            throw std::runtime_error(
+                                "RenderGraph: shader resource '" + reflected.name +
+                                "' shares descriptor set " +
+                                std::to_string(reflectedSet.setIndex) +
+                                " with graph resources in pass '" +
+                                node.pass->passName +
+                                "', but has no matching ReadTexture declaration.");
+                        }
+                        resourceSet.textureBindings.push_back(
+                            {read->handle, reflected.binding,
+                             reflected.descriptorType});
+                    } else {
+                        resourceSet.samplerBindings.push_back(reflected.binding);
+                    }
+                }
+
+                resourceSet.usesComparisonSampler =
+                    !resourceSet.textureBindings.empty() &&
+                    std::all_of(resourceSet.textureBindings.begin(),
+                                resourceSet.textureBindings.end(),
+                                [&](const RGPassNode::AutoTextureBinding& item) {
+                                    return (GetAspectFlags(GetTextureDesc(item.handle).format) &
+                                            VK_IMAGE_ASPECT_DEPTH_BIT) != 0;
+                                });
+
+                auto registered = descManager->getOrCreateLayout(layoutBindings);
+                resourceSet.layoutId = registered.id;
+                resourceSet.set = descManager->allocate(registered.id);
+                const VkSampler samplerHandle = resourceSet.usesComparisonSampler
+                    ? defaultComparisonSampler
+                    : defaultPassSampler;
+                for (uint32_t samplerBinding : resourceSet.samplerBindings) {
+                    VkDescriptorImageInfo sampler{};
+                    sampler.sampler = samplerHandle;
+                    descManager->writeImage(resourceSet.layoutId, resourceSet.set,
+                                            samplerBinding, sampler,
+                                            VK_DESCRIPTOR_TYPE_SAMPLER);
+                }
+                node.autoResourceSets.push_back(std::move(resourceSet));
+            }
+
+            for (const auto& read : node.builder.GetReads()) {
+                const bool matched = std::any_of(
+                    node.autoResourceSets.begin(), node.autoResourceSets.end(),
+                    [&](const RGPassNode::AutoResourceSet& resourceSet) {
+                        return std::any_of(
+                            resourceSet.textureBindings.begin(),
+                            resourceSet.textureBindings.end(),
+                            [&](const RGPassNode::AutoTextureBinding& item) {
+                                return item.handle == read.handle;
+                            });
+                    });
+                if (!matched) {
+                    throw std::runtime_error(
+                        "RenderGraph: pass '" + node.pass->passName +
+                        "' reads texture '" + read.resourceName +
+                        "', but its shader does not declare a sampled "
+                        "texture with the same name.");
+                }
+            }
+        }
+
+        if (desc.layout == VK_NULL_HANDLE) {
+            std::vector<VkDescriptorSetLayout> setLayouts;
+            uint32_t maxSetIndex = 0;
+            for (const auto& reflectedSet : compiled->reflection.sets) {
+                maxSetIndex = std::max(maxSetIndex, reflectedSet.setIndex);
+            }
+            setLayouts.resize(maxSetIndex + 1, VK_NULL_HANDLE);
+            if (!setLayouts.empty() && frameSetLayout != VK_NULL_HANDLE) {
+                setLayouts[0] = frameSetLayout;
+            }
+            for (const auto& reflectedSet : compiled->reflection.sets) {
+                if (reflectedSet.setIndex == 0 && frameSetLayout != VK_NULL_HANDLE) continue;
+                std::vector<VkDescriptorSetLayoutBinding> bindings;
+                bindings.reserve(reflectedSet.bindings.size());
+                for (const auto& reflected : reflectedSet.bindings) {
+                    bindings.push_back({reflected.binding, reflected.descriptorType,
+                                        reflected.descriptorCount,
+                                        reflected.stageFlags, nullptr});
+                }
+                setLayouts[reflectedSet.setIndex] =
+                    descManager->getOrCreateLayout(bindings).layout;
+            }
+            for (auto& layout : setLayouts) {
+                if (layout == VK_NULL_HANDLE) {
+                    layout = descManager->getOrCreateLayout({}).layout;
+                }
+            }
+
+            VkPipelineLayoutCreateInfo info{};
+            info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            info.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+            info.pSetLayouts    = setLayouts.data();
+            VkPushConstantRange pushConstant{};
+            if (compiled->reflection.pushConstant) {
+                pushConstant = *compiled->reflection.pushConstant;
+                info.pushConstantRangeCount = 1;
+                info.pPushConstantRanges    = &pushConstant;
+            }
+            if (vkCreatePipelineLayout(context->device, &info, nullptr,
+                                       &desc.layout) != VK_SUCCESS) {
+                throw std::runtime_error("RenderGraph: failed to create pipeline layout for pass '" +
+                                         node.pass->passName + "'.");
+            }
+            node.ownsPipelineLayout = true;
+        }
+
+        node.pipelineRuntime = runtime;
+        node.pass->pipelineRuntime_ = runtime;
+
+        // 材质 pass 在 Execute 内通过同一个 Runtime 按材质选择变体。
+        // 其余 pass 在这里预热默认变体，错误会在 Compile 阶段直接报告。
+        if (shader.autoBind) {
+            psoManager->getOrCreate(desc);
+        }
+    }
 }
 
 void RenderGraph::AllocatePhysicalResources() {
@@ -276,6 +646,23 @@ void RenderGraph::BuildDependencyGraph() {
         for (const auto& d : b.GetDepthOutputs()) touchResource(pi, d.handle);
     }
 
+    // Merge semantic ordering requested through InsertBefore/InsertAfter with
+    // the automatically inferred resource dependencies.
+    for (const auto& dependency : explicitDependencies_) {
+        int beforeIndex = -1;
+        int afterIndex = -1;
+        for (int pi = 0; pi < n; ++pi) {
+            if (passes[pi].pass == dependency.before) beforeIndex = pi;
+            if (passes[pi].pass == dependency.after) afterIndex = pi;
+        }
+        if (beforeIndex < 0 || afterIndex < 0) {
+            throw std::runtime_error(
+                "RenderGraph: explicit execution dependency references an "
+                "unregistered pass during compilation.");
+        }
+        addEdge(beforeIndex, afterIndex);
+    }
+
     TopologicalSort();
 }
 
@@ -296,10 +683,10 @@ void RenderGraph::TopologicalSort() {
     }
 
     if (static_cast<int>(executionOrder_.size()) != n) {
-        std::cerr << "[RenderGraph] Cycle detected in resource dependency graph! "
-                  << "Falling back to insertion order." << std::endl;
         executionOrder_.clear();
-        for (int i = 0; i < n; ++i) executionOrder_.push_back(i);
+        throw std::runtime_error(
+            "RenderGraph: cycle detected while combining resource and "
+            "explicit pass execution dependencies.");
     }
 }
 
@@ -467,6 +854,73 @@ void RenderGraph::BeginRendering(VkCommandBuffer cmd, const RGPassNode& node) {
     vkCmdBeginRendering(cmd, &info);
 }
 
+void RenderGraph::BindPassPipeline(VkCommandBuffer cmd,
+                                   const FrameContext& frame,
+                                   const RGResources& resources,
+                                   RGPassNode& node) {
+    if (!node.pass || !node.pipelineRuntime) return;
+    const PassShaderDesc& shader = node.builder.GetShaderDesc();
+    if (shader.autoBind) {
+        node.pass->BindShaderVariant(cmd);
+    }
+
+    VkPipelineLayout layout = node.pipelineRuntime->baseDesc.layout;
+    if (node.ownsPipelineLayout && frame.frameSet.isValid() &&
+        frameSetLayout != VK_NULL_HANDLE) {
+        ext::vkCmdSetDescriptorBufferOffsetsEXT(
+            cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
+            &frame.frameSet.bufferIndex, &frame.frameSet.offset);
+    }
+
+    if (descManager) {
+        for (auto& resourceSet : node.autoResourceSets) {
+            if (!resourceSet.set.isValid()) continue;
+            for (const auto& binding : resourceSet.textureBindings) {
+                VkDescriptorImageInfo image{};
+                image.imageView = resources.GetImageView(binding.handle);
+                image.imageLayout =
+                    (GetAspectFlags(GetTextureDesc(binding.handle).format) &
+                     VK_IMAGE_ASPECT_DEPTH_BIT)
+                    ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                    : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+                if (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                    image.sampler = resourceSet.usesComparisonSampler
+                        ? defaultComparisonSampler
+                        : defaultPassSampler;
+                }
+                descManager->writeImage(resourceSet.layoutId, resourceSet.set,
+                                        binding.binding, image, binding.type);
+            }
+            ext::vkCmdSetDescriptorBufferOffsetsEXT(
+                cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout,
+                resourceSet.setIndex, 1,
+                &resourceSet.set.bufferIndex, &resourceSet.set.offset);
+        }
+    }
+
+    VkExtent2D extent{0, 0};
+    const auto& colors = node.builder.GetColorOutputs();
+    const auto& depths = node.builder.GetDepthOutputs();
+    if (!colors.empty()) {
+        const auto& d = GetTextureDesc(colors.front().handle);
+        extent = {d.width, d.height};
+    } else if (!depths.empty()) {
+        const auto& d = GetTextureDesc(depths.front().handle);
+        extent = {d.width, d.height};
+    }
+    if (extent.width == 0 || extent.height == 0) return;
+
+    VkViewport viewport{};
+    viewport.width    = static_cast<float>(extent.width);
+    viewport.height   = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+    VkRect2D scissor{{0, 0}, extent};
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+}
+
 // ------------------------------------------------------------------
 // Present transition: 把 imported color attachment 过渡到 PRESENT_SRC_KHR
 // ------------------------------------------------------------------
@@ -542,6 +996,7 @@ void RenderGraph::Execute(VkCommandBuffer cmd, const FrameContext& frame) {
 
         InsertBarriers(cmd, node);
         BeginRendering(cmd, node);
+        BindPassPipeline(cmd, frame, resources, node);
         node.pass->Execute(cmd, frame, resources);
         vkCmdEndRendering(cmd);
 

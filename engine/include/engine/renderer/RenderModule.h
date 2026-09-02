@@ -14,6 +14,7 @@
 #include <vk_mem_alloc.h>
 
 #include <array>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -52,7 +53,9 @@ public:
     using FramebufferSizeFn = std::function<std::pair<int, int>()>;
     using GuiRenderFn       = FrameContext::GuiRenderFn;
 
-    void init(VulkanContext* ctx, VkSurfaceKHR surface, FramebufferSizeFn getSize);
+    /// userShaderDirs 按顺序优先于引擎内置 shader 目录。
+    void init(VulkanContext* ctx, VkSurfaceKHR surface, FramebufferSizeFn getSize,
+              const std::vector<std::filesystem::path>& userShaderDirs = {});
     void cleanup();
 
     /// 设置 renderer（拥有权转移）。
@@ -84,7 +87,6 @@ public:
     VulkanContext*        getVulkanContext()      const { return context; }
     DescriptorSetManager& getDescriptorManager()       { return descManager; }
     ShaderVariantManager& getShaderVariantManager()    { return shaderVariantManager; }
-    PsoManager&           getPsoManager()              { return psoManager; }
     VkDescriptorSetLayout getFrameSetLayout()    const { return frameSetLayout; }
     IRenderer*      getRenderer()          const { return renderer.get(); }
 

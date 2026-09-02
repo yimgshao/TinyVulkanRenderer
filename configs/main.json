@@ -1,4 +1,5 @@
 {
+    "shaderDirs": ["../shaders"],
     "renderer": "./renderer/deferred.json",
     "material": "./material/pbr.json",
     "scene": "../scenes/desktop/gltf.gltf",

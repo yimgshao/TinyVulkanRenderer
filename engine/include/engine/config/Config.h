@@ -4,6 +4,7 @@
 #include <map>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace engine {
 
@@ -11,13 +12,14 @@ namespace engine {
  * Config -- 树形键值配置容器（类 dict）。
  *
  * 引擎侧只持有容器，不关心配置来源（JSON / ImGui / 代码）。
- * 值类型收敛为 bool / double / string / 子树四种，JSON 数字统一存 double。
+ * 值类型收敛为 bool / double / string / string list / 子树，JSON 数字统一存 double。
  * 所有查找支持 "a.b.c" 点路径；缺失或类型不符返回调用方给的默认值，
  * 即"缺任何 key 行为不变"。
  */
 class Config {
 public:
-    using Value = std::variant<bool, double, std::string>;
+    using StringList = std::vector<std::string>;
+    using Value = std::variant<bool, double, std::string, StringList>;
 
     bool has(const std::string& key) const;
 
@@ -30,11 +32,14 @@ public:
     float       getFloat (const std::string& key, float def = 0.0f) const;
     int32_t     getInt   (const std::string& key, int32_t def = 0) const;
     std::string getString(const std::string& key, const std::string& def = {}) const;
+    StringList  getStringList(const std::string& key,
+                              const StringList& def = {}) const;
 
     /// 写值（支持点路径，中间 section 不存在时自动创建）。
     void set(const std::string& key, bool v);
     void set(const std::string& key, double v);
     void set(const std::string& key, const std::string& v);
+    void set(const std::string& key, const StringList& v);
     void set(const std::string& key, const char* v) { set(key, std::string(v)); }
     void setSection(const std::string& key, Config sub);
 

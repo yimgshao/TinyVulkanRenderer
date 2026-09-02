@@ -5,6 +5,7 @@
 #include "engine/renderer/rendergraph/RenderGraphBuilder.h"
 #include "engine/renderer/renderpass/IRenderPass.h"
 #include "engine/renderer/FrameContext.h"
+#include "engine/pso/PSO.h"
 #include "engine/VulkanContext.h"
 #include "engine/VulkanUtils.h"
 
@@ -16,22 +17,51 @@
 
 namespace engine {
 
+class PsoManager;
+
 struct RGTextureInfo {
     std::string   name;
     RGTextureDesc desc;
 };
 
+struct PassPipelineRuntime {
+    PsoManager*     psoManager = nullptr;
+    GraphicsPSODesc baseDesc;
+};
+
 struct RGPassNode {
     IRenderPass* pass = nullptr;  // RenderGraph 不拥有 pass 所有权
     RenderGraphBuilder builder;
+    std::shared_ptr<PassPipelineRuntime> pipelineRuntime;
+    bool ownsPipelineLayout = false;
+    struct AutoTextureBinding {
+        RGTextureHandle handle = kInvalidRGTextureHandle;
+        uint32_t binding = 0;
+        VkDescriptorType type = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+    };
+    struct AutoResourceSet {
+        uint32_t setIndex = 0;
+        LayoutId layoutId = kInvalidLayoutId;
+        DescriptorSetHandle set = DescriptorSetHandle::invalid();
+        bool usesComparisonSampler = false;
+        std::vector<AutoTextureBinding> textureBindings;
+        std::vector<uint32_t> samplerBindings;
+    };
+    std::vector<AutoResourceSet> autoResourceSets;
 };
 
 class RenderGraph {
 public:
-    void Init(VulkanContext* ctx);
+    void Init(VulkanContext* ctx, PsoManager* psoManager,
+              ShaderVariantManager* variantManager,
+              DescriptorSetManager* descManager,
+              VkDescriptorSetLayout frameSetLayout);
     void Cleanup();
 
-    void AddPass(IRenderPass* pass);
+    void AddPass(IRenderPass* pass, const RenderGraphBuildContext& ctx);
+    /// Add a semantic execution-order constraint. Both passes must have been
+    /// registered with AddPass before Compile is called.
+    void AddExecutionDependency(IRenderPass* before, IRenderPass* after);
     void Compile();
     void Execute(VkCommandBuffer cmd, const FrameContext& frame);
 
@@ -57,16 +87,25 @@ private:
 
     void AllocatePhysicalResources();
     void FreePhysicalResources();
+    void BuildPassPipelines();
 
     void BuildDependencyGraph();
     void TopologicalSort();
 
     void InsertBarriers(VkCommandBuffer cmd, const RGPassNode& node);
     void BeginRendering(VkCommandBuffer cmd, const RGPassNode& node);
+    void BindPassPipeline(VkCommandBuffer cmd, const FrameContext& frame,
+                          const RGResources& resources, RGPassNode& node);
     void EmitPresentTransitions(VkCommandBuffer cmd, const RGPassNode& node);
     void ResetPerFrameImportedStates();
 
     VulkanContext* context = nullptr;
+    PsoManager* psoManager = nullptr;
+    ShaderVariantManager* variantManager = nullptr;
+    DescriptorSetManager* descManager = nullptr;
+    VkDescriptorSetLayout frameSetLayout = VK_NULL_HANDLE;
+    VkSampler defaultPassSampler = VK_NULL_HANDLE;
+    VkSampler defaultComparisonSampler = VK_NULL_HANDLE;
 
     RGTextureHandle nextHandle = 1;
     std::unordered_map<std::string, RGTextureHandle> nameToHandle;
@@ -92,6 +131,12 @@ private:
 
     std::vector<RGPassNode> passes;
     std::vector<int>        executionOrder_;   // 拓扑排序后的 pass 索引
+
+    struct ExplicitPassDependency {
+        IRenderPass* before = nullptr;
+        IRenderPass* after  = nullptr;
+    };
+    std::vector<ExplicitPassDependency> explicitDependencies_;
 
     // 复用 scratch（避免每帧分配）
     std::vector<VkImageMemoryBarrier2>     barrierScratch;

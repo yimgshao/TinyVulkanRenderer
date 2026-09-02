@@ -285,7 +285,7 @@ public:
     ComPtr<IDxcCompiler3>      compiler_;
     ComPtr<IDxcIncludeHandler> includeHandler_;
 
-    std::filesystem::path searchDir_;
+    std::vector<std::filesystem::path> searchDirs_;
     bool enableDebugInfo_ = false;
     bool isInitialized_   = false;
 
@@ -295,9 +295,23 @@ public:
     // -------------------------------------------------------------------------
     // Init / Cleanup
     // -------------------------------------------------------------------------
-    bool Init(const std::filesystem::path& shaderSearchDir, bool enableDebugInfo) {
+    bool Init(const std::vector<std::filesystem::path>& shaderSearchDirs,
+              bool enableDebugInfo) {
         if (isInitialized_) return true;
-        searchDir_      = shaderSearchDir;
+        searchDirs_.clear();
+        for (const auto& dir : shaderSearchDirs) {
+            if (dir.empty()) continue;
+            const auto normalized = dir.lexically_normal();
+            if (std::find(searchDirs_.begin(), searchDirs_.end(), normalized) ==
+                searchDirs_.end()) {
+                searchDirs_.push_back(normalized);
+            }
+        }
+        if (searchDirs_.empty()) {
+            std::cerr << "[DxcCompiler] No shader search directories provided"
+                      << std::endl;
+            return false;
+        }
         enableDebugInfo_ = enableDebugInfo;
 
         if (FAILED(DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils_))) || !utils_) {
@@ -313,7 +327,11 @@ public:
             return false;
         }
 
-        std::cout << "[DxcCompiler] Initialized. SearchDir: " << searchDir_.string() << std::endl;
+        std::cout << "[DxcCompiler] Initialized. SearchDirs:";
+        for (const auto& dir : searchDirs_) {
+            std::cout << "\n  - " << dir.string();
+        }
+        std::cout << std::endl;
         isInitialized_ = true;
         return true;
     }
@@ -322,6 +340,7 @@ public:
         includeHandler_.Reset();
         compiler_.Reset();
         utils_.Reset();
+        searchDirs_.clear();
         isInitialized_ = false;
     }
 
@@ -336,7 +355,7 @@ public:
                                         ShaderStage stage,
                                         const std::vector<std::wstring>& defineArgs) {
         std::vector<std::wstring> argStorage;
-        argStorage.reserve(defineArgs.size() + 16);
+        argStorage.reserve(defineArgs.size() + 16 + searchDirs_.size() * 2);
         argStorage.push_back(L"-spirv");
         argStorage.push_back(L"-fspv-target-env=vulkan1.2");
         argStorage.push_back(L"-fspv-entrypoint-name=main");
@@ -345,8 +364,10 @@ public:
         argStorage.push_back(ToWide(StageToProfile(stage)));
         argStorage.push_back(L"-E");
         argStorage.push_back(ToWide(StageToEntryName(stage)));
-        argStorage.push_back(L"-I");
-        argStorage.push_back(searchDir_.wstring());
+        for (const auto& dir : searchDirs_) {
+            argStorage.push_back(L"-I");
+            argStorage.push_back(dir.wstring());
+        }
         for (const auto& def : defineArgs) argStorage.push_back(def);
         if (enableDebugInfo_) argStorage.push_back(L"-Zi");
 
@@ -482,8 +503,16 @@ DxcCompiler::~DxcCompiler() = default;
 DxcCompiler::DxcCompiler(DxcCompiler&&) noexcept = default;
 DxcCompiler& DxcCompiler::operator=(DxcCompiler&&) noexcept = default;
 
-bool DxcCompiler::Init(const std::filesystem::path& shaderSearchDir, bool enableDebugInfo) {
-    return impl_->Init(shaderSearchDir, enableDebugInfo);
+bool DxcCompiler::Init(
+    const std::vector<std::filesystem::path>& shaderSearchDirs,
+    bool enableDebugInfo) {
+    return impl_->Init(shaderSearchDirs, enableDebugInfo);
+}
+
+bool DxcCompiler::Init(const std::filesystem::path& shaderSearchDir,
+                       bool enableDebugInfo) {
+    return Init(std::vector<std::filesystem::path>{shaderSearchDir},
+                enableDebugInfo);
 }
 
 void DxcCompiler::Cleanup() { impl_->Cleanup(); }

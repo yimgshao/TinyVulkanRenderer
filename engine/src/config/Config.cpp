@@ -77,7 +77,8 @@ template <typename T>
 T convertOrDefault(const Config::Value* v, const std::string& key, T def) {
     if (!v) return def;
     if constexpr (std::is_same_v<T, bool> || std::is_same_v<T, double> ||
-                  std::is_same_v<T, std::string>) {
+                  std::is_same_v<T, std::string> ||
+                  std::is_same_v<T, Config::StringList>) {
         // variant 直接成员类型
         if (auto p = std::get_if<T>(v)) return *p;
     } else if constexpr (std::is_same_v<T, float> ||
@@ -107,10 +108,15 @@ std::string Config::getString(const std::string& key,
                               const std::string& def) const {
     return convertOrDefault(find(key), key, def);
 }
+Config::StringList Config::getStringList(const std::string& key,
+                                         const StringList& def) const {
+    return convertOrDefault(find(key), key, def);
+}
 
 void Config::set(const std::string& key, bool v)        { setImpl(key, Value{v}); }
 void Config::set(const std::string& key, double v)      { setImpl(key, Value{v}); }
 void Config::set(const std::string& key, const std::string& v) { setImpl(key, Value{v}); }
+void Config::set(const std::string& key, const StringList& v) { setImpl(key, Value{v}); }
 
 void Config::setImpl(const std::string& key, Value v) {
     std::vector<std::string> parts;
@@ -140,7 +146,16 @@ std::string Config::dump(const std::string& prefix) const {
         os << prefix << k << " = ";
         if (auto b = std::get_if<bool>(&v))            os << (*b ? "true" : "false");
         else if (auto d = std::get_if<double>(&v))     os << *d;
-        else                                           os << '"' << std::get<std::string>(v) << '"';
+        else if (auto s = std::get_if<std::string>(&v)) os << '"' << *s << '"';
+        else {
+            const auto& list = std::get<StringList>(v);
+            os << '[';
+            for (size_t i = 0; i < list.size(); ++i) {
+                if (i > 0) os << ", ";
+                os << '"' << list[i] << '"';
+            }
+            os << ']';
+        }
         os << '\n';
     }
     for (const auto& [k, sub] : sections_) {

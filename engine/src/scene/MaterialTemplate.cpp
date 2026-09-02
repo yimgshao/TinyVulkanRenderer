@@ -1,5 +1,4 @@
 #include "engine/scene/MaterialTemplate.h"
-#include "engine/pso/PsoManager.h"
 #include "engine/shader/ShaderVariantManager.h"
 
 #include <algorithm>
@@ -14,7 +13,6 @@ void MaterialTemplate::init(VkDevice dev, VkPhysicalDevice phys,
     device         = dev;
     physicalDevice = phys;
     descManager    = createInfo.descManager;
-    psoManager     = createInfo.psoManager;
     alphaMode      = createInfo.alphaMode;
     variantManager = createInfo.variantManager;
     materialType   = createInfo.materialType;
@@ -23,10 +21,6 @@ void MaterialTemplate::init(VkDevice dev, VkPhysicalDevice phys,
     if (!variantManager) {
         throw std::runtime_error(
             "MaterialTemplate::init: variantManager is required.");
-    }
-    if (!psoManager) {
-        throw std::runtime_error(
-            "MaterialTemplate::init: psoManager is required.");
     }
 
     // 1. 编译材质接口模块 -> 取反射
@@ -122,12 +116,16 @@ void MaterialTemplate::init(VkDevice dev, VkPhysicalDevice phys,
     pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
     pipelineLayoutInfo.pSetLayouts    = setLayouts.data();
 
+    // 所有场景 pass 的顶点阶段都通过 gObjectData 读取模型矩阵。
+    // material_interface 只编译 fragment stage，无法可靠反射出该范围，
+    // 因此材质 Pipeline Layout 必须显式声明统一的 per-object 契约。
     VkPushConstantRange pcRange{};
-    if (defaultReflection->pushConstant) {
-        pcRange = *defaultReflection->pushConstant;
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges    = &pcRange;
-    }
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT |
+                         VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcRange.offset     = 0;
+    pcRange.size       = sizeof(glm::mat4);
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges    = &pcRange;
 
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr,
                                &pipelineLayout) != VK_SUCCESS) {
@@ -136,44 +134,8 @@ void MaterialTemplate::init(VkDevice dev, VkPhysicalDevice phys,
     }
 }
 
-VkPipeline MaterialTemplate::getOrCreatePipeline(
-    VkDevice dev, const ShaderModuleConfig& shaderConfig,
-    const std::string& passName,
-    const PipelineStateDesc& state,
-    const ShaderVariantKey& shaderVariant,
-    const ShaderParamSet& materialParams,
-    const ShaderParamSet& passParams,
-    uint32_t colorAttachmentCount, const VkFormat* pColorFormats,
-    VkFormat depthFormat, VkSampleCountFlagBits msaaSamples) {
-    (void)dev;  // device 由 PsoManager 持有
-
-    GraphicsPSODesc desc{};
-    desc.shaderConfig     = shaderConfig;
-    desc.variantKey       = shaderVariant;
-    desc.materialParams   = materialParams;
-    desc.passParams       = passParams;
-    desc.materialHeader   = materialHeader;
-    desc.vertexLayoutName = "StaticMesh";
-    desc.state            = state;
-    // 透明材质不写深度（材质语义，由材质侧在填 desc 时修正）
-    if (alphaMode == AlphaMode::Blend) {
-        desc.state.depthWriteEnable = VK_FALSE;
-    }
-    desc.colorCount       = std::min(colorAttachmentCount,
-                                     GraphicsPSODesc::kMaxColorAttachments);
-    for (uint32_t i = 0; i < desc.colorCount; ++i) {
-        desc.colorFormats[i] = pColorFormats[i];
-    }
-    desc.depthFormat      = depthFormat;
-    desc.msaaSamples      = msaaSamples;
-    desc.layout           = pipelineLayout;
-    desc.passName         = passName;
-
-    return psoManager->getOrCreate(desc);
-}
-
 void MaterialTemplate::cleanup(VkDevice dev) {
-    // PSO 由引擎级 PsoManager 统一拥有与销毁，此处不再处理。
+    // PSO 由 RenderGraph 的统一 Pipeline Runtime 拥有与缓存。
 
     if (pipelineLayout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(dev, pipelineLayout, nullptr);
@@ -191,7 +153,6 @@ void MaterialTemplate::cleanup(VkDevice dev) {
     materialLayoutId  = kInvalidLayoutId;
     defaultReflection = nullptr;
     descManager       = nullptr;
-    psoManager        = nullptr;
     physicalDevice    = VK_NULL_HANDLE;
     device            = VK_NULL_HANDLE;
 }

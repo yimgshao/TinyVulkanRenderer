@@ -16,13 +16,15 @@ class RenderGraph;
  *      物理句柄（VkImage / VkImageView）到成员变量；
  *   2. 逻辑 -> 物理的解析只允许发生在 IRenderPass::Execute 内，
  *      通过本访问器完成；
- *   3. 引用 graph 纹理的 descriptor 必须在 Execute 内每帧重写。
+ *   3. 通过 RenderGraphBuilder::ReadTexture 声明的纹理由 RenderGraph 自动
+ *      解析并写入 descriptor；只有未纳入 RenderGraph 的底层集成代码才需要
+ *      使用本访问器直接取得 Vulkan 句柄。
  *
  * 作为交换，RenderGraph 承诺：整个 Execute 阶段物理资源保持有效
  * （Compile 先于任何 Execute，且帧内不会销毁物理资源）。
  *
  * 本类只能由 RenderGraph 构造（私有构造 + friend），因此 pass 在
- * Setup / OnBuildRenderGraph 等阶段无法拿到实例 -- 「何时可以解析」
+ * Setup 等构建阶段无法拿到实例 -- 「何时可以解析」
  * 由类型系统强制，而非依赖开发者自觉。
  */
 class RGResources {

@@ -7,7 +7,9 @@
 #include "engine/pso/PsoManager.h"
 #include "engine/shader/ShaderVariantManager.h"
 
+#include <algorithm>
 #include <array>
+#include <iterator>
 #include <stdexcept>
 
 namespace engine {
@@ -25,6 +27,68 @@ ShaderModuleConfig MakeForwardShaderConfig() {
 }
 
 } // anonymous namespace
+
+void ForwardRenderer::validateNewPass(const IRenderPass* pass) const {
+    if (!pass) {
+        throw std::runtime_error("ForwardRenderer: cannot add a null render pass.");
+    }
+    if (pass->passName.empty()) {
+        throw std::runtime_error("ForwardRenderer: render pass name cannot be empty.");
+    }
+    const auto duplicate = std::find_if(
+        passes_.begin(), passes_.end(), [&](const auto& existing) {
+            return existing->passName == pass->passName;
+        });
+    if (duplicate != passes_.end()) {
+        throw std::runtime_error("ForwardRenderer: duplicate render pass name '" +
+                                 pass->passName + "'.");
+    }
+}
+
+void ForwardRenderer::addPass(std::unique_ptr<IRenderPass> pass) {
+    validateNewPass(pass.get());
+    passes_.push_back(std::move(pass));
+}
+
+void ForwardRenderer::insertPassBefore(
+    const std::string& targetPassName,
+    std::unique_ptr<IRenderPass> pass) {
+    validateNewPass(pass.get());
+    const auto target = std::find_if(
+        passes_.begin(), passes_.end(), [&](const auto& existing) {
+            return existing->passName == targetPassName;
+        });
+    if (target == passes_.end()) {
+        throw std::runtime_error("ForwardRenderer: cannot insert pass '" +
+                                 pass->passName + "' before unknown pass '" +
+                                 targetPassName + "'.");
+    }
+
+    IRenderPass* insertedPass = pass.get();
+    IRenderPass* targetPass = target->get();
+    passes_.insert(target, std::move(pass));
+    orderConstraints_.push_back({insertedPass, targetPass});
+}
+
+void ForwardRenderer::insertPassAfter(
+    const std::string& targetPassName,
+    std::unique_ptr<IRenderPass> pass) {
+    validateNewPass(pass.get());
+    const auto target = std::find_if(
+        passes_.begin(), passes_.end(), [&](const auto& existing) {
+            return existing->passName == targetPassName;
+        });
+    if (target == passes_.end()) {
+        throw std::runtime_error("ForwardRenderer: cannot insert pass '" +
+                                 pass->passName + "' after unknown pass '" +
+                                 targetPassName + "'.");
+    }
+
+    IRenderPass* targetPass = target->get();
+    IRenderPass* insertedPass = pass.get();
+    passes_.insert(std::next(target), std::move(pass));
+    orderConstraints_.push_back({targetPass, insertedPass});
+}
 
 // ------------------------------------------------------------------
 // Lifecycle
@@ -48,7 +112,6 @@ void ForwardRenderer::init(const FrameContext& ctx) {
     // Material set layout 由 MaterialTemplate 根据 shader reflection 创建
     MaterialTemplateCreateInfo tmplInfo{};
     tmplInfo.variantManager = variantManager;
-    tmplInfo.psoManager     = ctx.psoManager;
     tmplInfo.materialType = materialCfg_.getString("type", "PbrMaterial");
     tmplInfo.materialHeader = materialCfg_.getString("header", "materials/pbr.hlsl");
     tmplInfo.alphaMode      = AlphaMode::Opaque;
@@ -64,6 +127,7 @@ void ForwardRenderer::init(const FrameContext& ctx) {
 }
 
 void ForwardRenderer::cleanup() {
+    orderConstraints_.clear();
     passes_.clear();
 
     if (defaultMaterialTemplate) {
@@ -72,11 +136,6 @@ void ForwardRenderer::cleanup() {
     }
 
     // 阴影资源
-    if (shadowSet.isValid() && descManager) {
-        descManager->free(shadowLayoutId, shadowSet);
-        shadowSet = DescriptorSetHandle::invalid();
-    }
-    shadowLayoutId = kInvalidLayoutId;
     if (shadowPipelineLayout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
         shadowPipelineLayout = VK_NULL_HANDLE;
@@ -84,10 +143,6 @@ void ForwardRenderer::cleanup() {
     if (shadowSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device, shadowSetLayout, nullptr);
         shadowSetLayout = VK_NULL_HANDLE;
-    }
-    if (shadowSampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, shadowSampler, nullptr);
-        shadowSampler = VK_NULL_HANDLE;
     }
 
     descManager    = nullptr;
@@ -104,22 +159,8 @@ void ForwardRenderer::cleanup() {
 void ForwardRenderer::setupShadows(const FrameContext& ctx) {
     (void)ctx;
 
-    // 1. comparison sampler（硬件 PCF）
-    VkSamplerCreateInfo sci{};
-    sci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sci.magFilter    = VK_FILTER_LINEAR;
-    sci.minFilter    = VK_FILTER_LINEAR;
-    sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.compareEnable = VK_TRUE;
-    sci.compareOp     = VK_COMPARE_OP_LESS_OR_EQUAL;
-    if (vkCreateSampler(device, &sci, nullptr, &shadowSampler) != VK_SUCCESS) {
-        throw std::runtime_error("ForwardRenderer: failed to create shadow sampler.");
-    }
-
-    // 2. shadow set layout（material set 之后的全局 set）：2x SAMPLED_IMAGE + 1x SAMPLER
+    // shadow set layout（material set 之后的全局 set）：
+    // 2x SAMPLED_IMAGE + 1x SAMPLER。Set 的分配、写入和绑定由 RenderGraph 完成。
     std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     for (uint32_t i = 0; i < 3; ++i) {
         bindings[i].binding         = i;
@@ -139,15 +180,6 @@ void ForwardRenderer::setupShadows(const FrameContext& ctx) {
         throw std::runtime_error("ForwardRenderer: failed to create shadow set layout.");
     }
 
-    shadowLayoutId = descManager->registerLayout(shadowSetLayout, /*maxSets=*/1);
-    shadowSet      = descManager->allocate(shadowLayoutId);
-
-    // sampler 对象不变，一次写好；atlas 纹理部分由 ForwardPass 按 RGResources
-    // 契约在 Execute 中每帧重写。
-    VkDescriptorImageInfo samplerInfo{};
-    samplerInfo.sampler = shadowSampler;
-    descManager->writeImage(shadowLayoutId, shadowSet, 2, samplerInfo,
-                            VK_DESCRIPTOR_TYPE_SAMPLER);
 }
 
 // ------------------------------------------------------------------
@@ -158,13 +190,10 @@ void ForwardRenderer::createDefaultPasses(const FrameContext& ctx) {
     auto fwd = std::make_unique<ForwardPass>();
     fwd->passName        = "Forward";
     fwd->pipelineLayout  = defaultMaterialTemplate->getPipelineLayout();
-    fwd->device          = device;
     fwd->depthFormat     = VK_FORMAT_D32_SFLOAT;
     fwd->msaaSamples     = VK_SAMPLE_COUNT_1_BIT;
-    fwd->swapchainHandle = ctx.hSwapchain;
-    fwd->buildExtent     = ctx.renderExtent;
-    fwd->colorFormat     = ctx.swapchainFormat;
     fwd->shaderConfig    = MakeForwardShaderConfig();
+    fwd->materialHeader  = defaultMaterialTemplate->getMaterialHeader();
     // passParams 整节灌入：配置缺失时不设任何值，由 shader 默认行为接管
     if (rendererCfg_.has("passParams")) {
         for (const auto& [k, v] : rendererCfg_.section("passParams").values()) {
@@ -177,14 +206,8 @@ void ForwardRenderer::createDefaultPasses(const FrameContext& ctx) {
     }
     // tonemap 是 renderer 级开关（两条管线统一的配置键），显式设置
     fwd->passParams.set("useTonemap", rendererCfg_.getBool("tonemap", true));
-    // 阴影采样接线（RGResources 契约的 descriptor 由 pass 每帧重写）
-    fwd->descManager     = descManager;
-    fwd->shadowSet       = shadowSet;
-    fwd->shadowLayoutId  = shadowLayoutId;
-    fwd->shadowSetIndex  = defaultMaterialTemplate->getMaterialSetIndex() + 1;
-
-    // ShadowPass：VS-only 深度 PSO，经 PsoManager 创建（无材质）
-    VkPushConstantRange pcRange{VK_SHADER_STAGE_VERTEX_BIT, 0, 80};
+    // ShadowPass：VS-only 深度 pipeline layout；Shader/PSO 由 RenderGraph 创建。
+    VkPushConstantRange pcRange{VK_SHADER_STAGE_VERTEX_BIT, 0, 96};
     VkPipelineLayoutCreateInfo pli{};
     pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pli.setLayoutCount         = 0;
@@ -195,24 +218,8 @@ void ForwardRenderer::createDefaultPasses(const FrameContext& ctx) {
         throw std::runtime_error("ForwardRenderer: failed to create shadow pipeline layout.");
     }
 
-    GraphicsPSODesc psoDesc{};
-    psoDesc.shaderConfig.moduleName = "common/shadow_depth";
-    psoDesc.shaderConfig.stages     = {ShaderStage::Vertex};
-    psoDesc.variantKey              = {};   // 无材质类型
-    psoDesc.materialHeader          = "";   // 独立编译，无材质头
-    psoDesc.vertexLayoutName        = "StaticMesh";
-    psoDesc.state                   = PipelineStateDesc::Default();
-    psoDesc.state.depthBiasEnable   = VK_TRUE;
-    psoDesc.colorCount              = 0;
-    psoDesc.depthFormat             = VK_FORMAT_D32_SFLOAT;
-    psoDesc.msaaSamples             = VK_SAMPLE_COUNT_1_BIT;
-    psoDesc.layout                  = shadowPipelineLayout;
-    psoDesc.passName                = "Shadow";
-
     auto shadow = std::make_unique<ShadowPass>();
-    shadow->device         = device;
     shadow->pipelineLayout = shadowPipelineLayout;
-    shadow->pipeline       = ctx.psoManager->getOrCreate(psoDesc);
     shadow->depthFormat    = VK_FORMAT_D32_SFLOAT;
     shadow->directionalRes = rendererCfg_.getInt("shadow.directionalRes", 2048);
     shadow->pointRes       = rendererCfg_.getInt("shadow.pointRes", 512);
@@ -230,10 +237,14 @@ void ForwardRenderer::createDefaultPasses(const FrameContext& ctx) {
 // ------------------------------------------------------------------
 
 void ForwardRenderer::buildRenderGraph(RenderGraph& rg,
-                                       const FrameContext& ctx) {
+                                       const RenderGraphBuildContext& ctx) {
     for (auto& pass : passes_) {
-        pass->OnBuildRenderGraph(ctx);
-        rg.AddPass(pass.get());
+        rg.AddPass(pass.get(), ctx);
+    }
+    for (const auto& constraint : orderConstraints_) {
+        if (constraint.before->enabled && constraint.after->enabled) {
+            rg.AddExecutionDependency(constraint.before, constraint.after);
+        }
     }
 }
 

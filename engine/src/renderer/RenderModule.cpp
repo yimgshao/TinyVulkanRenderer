@@ -13,27 +13,33 @@ namespace engine {
 // ------------------------------------------------------------------
 
 void RenderModule::init(VulkanContext* ctx, VkSurfaceKHR surface,
-                        FramebufferSizeFn getSize) {
+                        FramebufferSizeFn getSize,
+                        const std::vector<std::filesystem::path>& userShaderDirs) {
     context = ctx;
     initVMA(context->instance, context->physicalDevice, context->device);
 
     swapChain = std::make_unique<SwapChain>();
     swapChain->init(ctx, surface, std::move(getSize));
 
-    renderGraph.Init(context);
-
     createFrameSetLayout();
 
     descManager.init(context->device, context->physicalDevice);
     frameLayoutId = descManager.registerLayout(frameSetLayout, MAX_FRAMES_IN_FLIGHT);
 
+    std::vector<std::filesystem::path> shaderSearchDirs = userShaderDirs;
 #ifdef ENGINE_DEFAULT_SHADER_DIR
-    shaderVariantManager.Init(ENGINE_DEFAULT_SHADER_DIR);
+    shaderSearchDirs.emplace_back(ENGINE_DEFAULT_SHADER_DIR);
 #else
-    shaderVariantManager.Init("engine/shaders");
+    shaderSearchDirs.emplace_back("engine/shaders");
 #endif
+    if (!shaderVariantManager.Init(shaderSearchDirs)) {
+        throw std::runtime_error("failed to initialize shader compiler");
+    }
 
     psoManager.init(context->device, &shaderVariantManager);
+
+    renderGraph.Init(context, &psoManager, &shaderVariantManager,
+                     &descManager, frameSetLayout);
 
     createFrameResources();
     createSyncObjects();
@@ -372,12 +378,17 @@ void RenderModule::rebuildRenderGraph() {
     // RenderGraph::Cleanup() 末尾会把它持有的 context 置空，所以重建前必须
     // 再 Init 一次，否则 Compile 阶段 AllocatePhysicalResources 会解引用 nullptr。
     renderGraph.Cleanup();
-    renderGraph.Init(context);
+    renderGraph.Init(context, &psoManager, &shaderVariantManager,
+                     &descManager, frameSetLayout);
     hSwapchain = kInvalidRGTextureHandle;
     importSwapchainResource();
 
-    FrameContext ctx = makeFrameContext(0);
-    renderer->buildRenderGraph(renderGraph, ctx);
+    RenderGraphBuildContext buildCtx{};
+    buildCtx.swapchainFormat = getSwapChainFormat();
+    buildCtx.renderExtent    = swapChain ? swapChain->getExtent()
+                                         : VkExtent2D{0, 0};
+    buildCtx.hSwapchain      = hSwapchain;
+    renderer->buildRenderGraph(renderGraph, buildCtx);
 
     renderGraph.Compile();
 }
@@ -393,11 +404,8 @@ FrameContext RenderModule::makeFrameContext(uint32_t frameIndex) {
     ctx.vkContext        = context;
     ctx.descManager      = &descManager;
     ctx.variantManager   = &shaderVariantManager;
-    ctx.psoManager       = &psoManager;
     ctx.frameSetLayout   = frameSetLayout;
-    ctx.swapchainFormat  = getSwapChainFormat();
     ctx.renderExtent     = swapChain ? swapChain->getExtent() : VkExtent2D{0, 0};
-    ctx.hSwapchain       = hSwapchain;
     ctx.scene            = scene;
     ctx.frameIndex       = frameIndex;
     ctx.frameSet         = frames[frameIndex].frameSet;

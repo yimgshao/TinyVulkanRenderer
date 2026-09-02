@@ -36,6 +36,9 @@ public:
     // -------------------------------------------------------------------------
 
     /// 初始化 DXC 编译器实例与 include handler（不加载任何 shader）。
+    /// 搜索目录按传入顺序生成 -I 参数，先匹配的文件优先。
+    bool Init(const std::vector<std::filesystem::path>& shaderSearchDirs,
+              bool enableDebugInfo = false);
     bool Init(const std::filesystem::path& shaderSearchDir,
               bool enableDebugInfo = false);
 

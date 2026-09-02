@@ -13,7 +13,18 @@ ShadowPass::ShadowPass() {
     passName = "Shadow";
 }
 
-void ShadowPass::Setup(RenderGraphBuilder& builder) {
+void ShadowPass::Setup(RenderGraphBuilder& builder,
+                       const RenderGraphBuildContext& /*ctx*/) {
+    ShaderModuleConfig shader{};
+    shader.moduleName = "common/shadow_depth";
+    shader.stages     = {ShaderStage::Vertex};
+    builder.SetShader(shader);
+    builder.SetVertexLayout("StaticMesh");
+    builder.SetPipelineLayout(pipelineLayout);
+    PipelineStateDesc state = PipelineStateDesc::Default();
+    state.depthBiasEnable = VK_TRUE;
+    builder.SetPipelineState(state);
+
     uint32_t dirLayers = maxDirectionalLights;
     uint32_t ptLayers  = maxPointLights * 6;
 
@@ -50,11 +61,9 @@ void ShadowPass::Execute(VkCommandBuffer cmd, const FrameContext& frame,
                          const RGResources& resources) {
     (void)resources;  // 本 pass 不采样 graph 纹理
     Scene* scene = frame.scene;
-    if (!scene || pipeline == VK_NULL_HANDLE) return;
+    if (!scene || GetPipelineLayout() == VK_NULL_HANDLE) return;
 
     const auto& lights = scene->getLights();
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     int32_t dirLayer = 0, ptLayer = 0;
 
@@ -108,7 +117,7 @@ void ShadowPass::drawSceneDepth(VkCommandBuffer cmd, const FrameContext& frame,
         pc._pad[1]    = 0;
         pc._pad[2]    = 0;
 
-        vkCmdPushConstants(cmd, pipelineLayout,
+        vkCmdPushConstants(cmd, GetPipelineLayout(),
                            VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
         obj.mesh->bind(cmd);

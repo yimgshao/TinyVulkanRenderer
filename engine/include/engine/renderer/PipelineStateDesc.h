@@ -9,7 +9,7 @@ namespace engine {
 /**
  * PipelineStateDesc — per-pass pipeline 渲染状态。
  *
- * 与 MaterialTemplate::getOrCreatePipeline 配合使用：
+ * 与 RenderGraph 的统一 pass Pipeline Runtime 配合使用：
  * - 作为 GraphicsPSOKey（PsoManager 缓存键）的一部分，区分不同 pass 的 PSO 变体
  * - 默认值匹配经典前向渲染（背面剔除、逆时针正面、深度写入）
  * - 延迟管线 GBuffer pass 通常用 Default()；Lighting pass 用 DisableDepthWrite()

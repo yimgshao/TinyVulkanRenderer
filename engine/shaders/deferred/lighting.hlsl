@@ -21,11 +21,11 @@
 // Set 1 — GBuffer 采样集（与 DeferredRenderer 的 gbuffer set layout 逐 binding 对齐）
 // =============================================================================
 
-[[vk::binding(0, 1)]] Texture2D    gGBuffer0;        // baseColor.rgb + occlusion.a（SRGB）
-[[vk::binding(1, 1)]] Texture2D    gGBuffer1;        // 世界法线 [0,1] 编码.rgb + metallic.a
-[[vk::binding(2, 1)]] Texture2D    gGBuffer2;        // roughness.r
-[[vk::binding(3, 1)]] Texture2D    gGBuffer3;        // emissive.rgb（HDR）
-[[vk::binding(4, 1)]] Texture2D    gGBufferDepth;    // GBuffer pass 深度（只读采样）
+[[vk::binding(0, 1)]] Texture2D    GBuffer0;         // baseColor.rgb + occlusion.a（SRGB）
+[[vk::binding(1, 1)]] Texture2D    GBuffer1;         // 世界法线 [0,1] 编码.rgb + metallic.a
+[[vk::binding(2, 1)]] Texture2D    GBuffer2;         // roughness.r
+[[vk::binding(3, 1)]] Texture2D    GBuffer3;         // emissive.rgb（HDR）
+[[vk::binding(4, 1)]] Texture2D    GBufferDepth;     // GBuffer pass 深度（只读采样）
 [[vk::binding(5, 1)]] SamplerState gGBufferSampler;
 
 // =============================================================================
@@ -58,7 +58,7 @@ float4 fragmentMain(FullscreenOutput input) : SV_Target
 
     // 深度为 clear 值（1.0）说明无几何像素：IBL 开启时采样环境 cubemap
     // 作为天空背景（世界方向由 invViewProj 还原），否则 discard 保留 clear 色。
-    float depth = gGBufferDepth.Sample(gGBufferSampler, uv).r;
+    float depth = GBufferDepth.Sample(gGBufferSampler, uv).r;
     if (depth >= 1.0)
     {
 #if USE_IBL
@@ -70,10 +70,10 @@ float4 fragmentMain(FullscreenOutput input) : SV_Target
 #endif
     }
 
-    float4 g0 = gGBuffer0.Sample(gGBufferSampler, uv);
-    float4 g1 = gGBuffer1.Sample(gGBufferSampler, uv);
-    float4 g2 = gGBuffer2.Sample(gGBufferSampler, uv);
-    float4 g3 = gGBuffer3.Sample(gGBufferSampler, uv);
+    float4 g0 = GBuffer0.Sample(gGBufferSampler, uv);
+    float4 g1 = GBuffer1.Sample(gGBufferSampler, uv);
+    float4 g2 = GBuffer2.Sample(gGBufferSampler, uv);
+    float4 g3 = GBuffer3.Sample(gGBufferSampler, uv);
 
     // 由深度反推世界坐标：ndc 与 GBuffer pass VS 输出的 clip 经同一
     // viewProj 变换，invViewProj 精确互逆（与投影矩阵深度约定无关）。

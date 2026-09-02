@@ -32,31 +32,21 @@ public:
 
     GBufferPass();
 
-    void Setup(RenderGraphBuilder& builder) override;
+    void Setup(RenderGraphBuilder& builder,
+               const RenderGraphBuildContext& ctx) override;
     void Execute(VkCommandBuffer cmd, const FrameContext& frame,
                  const RGResources& resources) override;
-    void OnBuildRenderGraph(const FrameContext& ctx) override;
-
     // 构建期注入（由 DeferredRenderer 设置一次）
     VkPipelineLayout      pipelineLayout   = VK_NULL_HANDLE;
-    VkDevice              device           = VK_NULL_HANDLE;
     VkFormat              depthFormat      = VK_FORMAT_D32_SFLOAT;
     VkSampleCountFlagBits msaaSamples      = VK_SAMPLE_COUNT_1_BIT;
-    VkExtent2D            buildExtent      = {0, 0};
     ShaderParamSet        passParams;       // pass 级 shader variant 参数
     ShaderModuleConfig    shaderConfig;     // 本 pass 的 shader 模块配置（材质由模板注入）
-
-    // ---- 阴影采样（构建期注入；shadowSet 无效则不绑阴影 set）----
-    DescriptorSetManager* descManager    = nullptr;
-    DescriptorSetHandle   shadowSet      = DescriptorSetHandle::invalid();
-    LayoutId              shadowLayoutId = kInvalidLayoutId;
-    uint32_t              shadowSetIndex = 2;
+    std::string           materialHeader;
 
 private:
     RGTextureHandle hGBuffer[kGBufferCount] = {};
     RGTextureHandle hDepth       = kInvalidRGTextureHandle;
-    RGTextureHandle hShadowDir   = kInvalidRGTextureHandle;
-    RGTextureHandle hShadowPoint = kInvalidRGTextureHandle;
 
     void drawOpaqueObjects(VkCommandBuffer cmd, const FrameContext& frame);
 };
