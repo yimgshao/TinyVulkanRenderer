@@ -1,0 +1,21 @@
+{
+  "name": "Example/AnimatedColor",
+  "properties": [
+    {"name": "colorA", "type": "color", "default": [1.0, 0.1, 0.1, 1.0]},
+    {"name": "colorB", "type": "color", "default": [0.1, 0.3, 1.0, 1.0]},
+    {"name": "speed", "type": "float", "default": 2.0}
+  ],
+  "passes": [
+    {
+      "name": "GBuffer",
+      "lightMode": "GBuffer",
+      "module": "animated_color.hlsl",
+      "vertexLayout": "StaticMesh",
+      "state": {
+        "cull": "back",
+        "depthTest": "less",
+        "depthWrite": true
+      }
+    }
+  ]
+}

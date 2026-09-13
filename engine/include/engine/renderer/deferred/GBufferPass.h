@@ -11,10 +11,9 @@ namespace engine {
 /**
  * GBufferPass -- 延迟管线几何通道：不透明物体写入 MRT GBuffer + depth。
  *
- * 绘制逻辑与 ForwardPass 几乎相同（绑 set0、阴影 set、按材质缓存 PSO、
- * push constant model、只画 Opaque），差异仅在：
- *   - PSO 的 shaderConfig 指向 deferred/gbuffer 模块
- *   - 4 张 color attachment（kGBufferFormats）+ 1 张 depth
+ * 绘制逻辑通过共享 SceneRenderer 完成（匹配材质的 GBuffer ShaderPass、
+ * 绑定 Frame/Material/Object 数据并绘制 Mesh）。本类只声明 4 张 color
+ * attachment（kGBufferFormats）+ 1 张 depth，并在 Execute 调用 DrawScene。
  *
  * 不持有任何「每帧注入」的可变字段，per-frame 状态一律从 FrameContext 读取。
  */
@@ -34,21 +33,16 @@ public:
 
     void Setup(RenderGraphBuilder& builder,
                const RenderGraphBuildContext& ctx) override;
-    void Execute(VkCommandBuffer cmd, const FrameContext& frame,
-                 const RGResources& resources) override;
+    void Execute(RenderPassContext& context) override;
     // 构建期注入（由 DeferredRenderer 设置一次）
-    VkPipelineLayout      pipelineLayout   = VK_NULL_HANDLE;
     VkFormat              depthFormat      = VK_FORMAT_D32_SFLOAT;
     VkSampleCountFlagBits msaaSamples      = VK_SAMPLE_COUNT_1_BIT;
     ShaderParamSet        passParams;       // pass 级 shader variant 参数
-    ShaderModuleConfig    shaderConfig;     // 本 pass 的 shader 模块配置（材质由模板注入）
-    std::string           materialHeader;
 
 private:
     RGTextureHandle hGBuffer[kGBufferCount] = {};
     RGTextureHandle hDepth       = kInvalidRGTextureHandle;
 
-    void drawOpaqueObjects(VkCommandBuffer cmd, const FrameContext& frame);
 };
 
 } // namespace engine

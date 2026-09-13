@@ -4,12 +4,10 @@
 #include "engine/renderer/rendergraph/RenderGraph.h"
 
 namespace engine {
-
 VkPipeline IRenderPass::BindShaderVariant(
     VkCommandBuffer cmd,
     const ShaderVariantKey& key,
-    const ShaderParamSet& materialParams,
-    const std::string& materialHeader) const {
+    const ShaderParamSet& materialParams) const {
     if (!pipelineRuntime_ || !pipelineRuntime_->psoManager) {
         return VK_NULL_HANDLE;
     }
@@ -17,9 +15,6 @@ VkPipeline IRenderPass::BindShaderVariant(
     GraphicsPSODesc desc = pipelineRuntime_->baseDesc;
     desc.variantKey      = key;
     desc.materialParams  = materialParams;
-    if (!materialHeader.empty()) {
-        desc.materialHeader = materialHeader;
-    }
 
     VkPipeline pipeline = pipelineRuntime_->psoManager->getOrCreate(desc);
     if (pipeline != VK_NULL_HANDLE) {

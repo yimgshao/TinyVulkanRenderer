@@ -3,27 +3,22 @@
 If you only want to add an effect to the existing rendering pipeline, you do not need to create a new Renderer. In most cases, you only need to:
 
 1. Implement an `IRenderPass`.
-2. Add the Pass to `ForwardRenderer` or `DeferredRenderer`.
+2. Add the Pass to `DeferredRenderer`.
 
-You only need to implement a new `IRenderer` when neither the Forward nor the Deferred pipeline is suitable.
+You only need to implement a new `IRenderer` when the Deferred pipeline is unsuitable.
 
 ## Existing Pass Names
 
 When inserting a Pass, you must use its actual Pass name.
 
-Built into the Forward Renderer:
-
-```text
-Shadow
-Forward
-```
-
 Built into the Deferred Renderer:
 
 ```text
 Shadow
+ShadowPoint
 GBuffer
 DeferredLighting
+Tonemap
 ```
 
 The App also adds:
@@ -66,10 +61,8 @@ public:
         builder.WriteColorPreserve(ctx.hSwapchain);
     }
 
-    void Execute(VkCommandBuffer cmd,
-                 const engine::FrameContext&,
-                 const engine::RGResources&) override {
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+    void Execute(engine::RenderPassContext& context) override {
+        vkCmdDraw(context.GetCommandBuffer(), 3, 1, 0, 0);
     }
 };
 ```
@@ -189,10 +182,10 @@ The API reports an error immediately if the target does not exist or the Pass na
 - Color or depth write targets.
 - Pipeline state.
 
-`Execute` is called every frame and is only responsible for recording draw commands. A typical fullscreen Pass usually only needs:
+`Execute` is called every frame and receives a `RenderPassContext`. A typical fullscreen Pass can use its raw command-buffer escape hatch:
 
 ```cpp
-vkCmdDraw(cmd, 3, 1, 0, 0);
+vkCmdDraw(context.GetCommandBuffer(), 3, 1, 0, 0);
 ```
 
 After the window size changes, the RenderGraph calls `Setup` again. Shaders and compatible Pipelines remain cached.
@@ -214,12 +207,18 @@ builder.WriteColorPreserve(target);
 
 Users generally do not need to specify `VkAttachmentLoadOp` or `VkAttachmentStoreOp` directly.
 
+## Material-driven Passes
+
+Call `context.DrawScene("YourTag")` in `Execute()` to select matching ShaderPasses from the materials attached to scene objects. The tag must equal the asset's `lightMode`; no material-specific declaration is required in `Setup()`. See [Shader/Material usage](shader_material_usage.md).
+
+`SceneColor` is linear HDR. Insert linear effects before `Tonemap`, and display-space overlays after it. To write HDR, use `WriteColorPreserve("SceneColor")`. `ReadTexture("GBufferDepth", "SceneDepth")` maps a graph resource to a shader resource name. Sampling and writing the same color attachment is rejected; create a snapshot for refraction.
+
 ## Passes Without SetShader
 
 `SetShader()` is optional:
 
 - When `SetShader()` is called, the Shader and Pipeline are created, cached, and bound by the RenderGraph.
-- When `SetShader()` is not called, the RenderGraph only manages resource dependencies, Attachments, and Dynamic Rendering.
+- When `SetShader()` is not called, the RenderGraph only manages resource dependencies, attachments, and Dynamic Rendering. The pass may call `context.DrawScene(tag)` or record a nonstandard workload through `context.GetCommandBuffer()`.
 
 `app::ImGuiPass` does not call `SetShader()`. In `Execute()`, it uses the ImGui Vulkan Backend, which binds its own Shader, Pipeline, and Descriptor.
 
@@ -258,4 +257,4 @@ private:
 
 `MyFirstPass` and `MySecondPass` are user-defined `IRenderPass` implementations, not built-in engine classes.
 
-If the new Renderer also needs to draw existing glTF scenes, you also need to create a `MaterialTemplate` and pass it to the scene loader. Refer to the implementations of `ForwardRenderer` and `DeferredRenderer`.
+If the new Renderer also needs to draw existing glTF scenes, it must support the ShaderPass tags used by those materials. Refer to `DeferredRenderer` and its `GBufferPass` implementation.

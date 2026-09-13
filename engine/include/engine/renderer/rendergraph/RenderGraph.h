@@ -8,6 +8,7 @@
 #include "engine/pso/PSO.h"
 #include "engine/VulkanContext.h"
 #include "engine/VulkanUtils.h"
+#include "engine/renderer/SceneRenderer.h"
 
 #include <vector>
 #include <memory>
@@ -18,6 +19,7 @@
 namespace engine {
 
 class PsoManager;
+class ShaderAssetManager;
 
 struct RGTextureInfo {
     std::string   name;
@@ -55,7 +57,8 @@ public:
     void Init(VulkanContext* ctx, PsoManager* psoManager,
               ShaderVariantManager* variantManager,
               DescriptorSetManager* descManager,
-              VkDescriptorSetLayout frameSetLayout);
+              VkDescriptorSetLayout frameSetLayout,
+              ShaderAssetManager* assets = nullptr);
     void Cleanup();
 
     void AddPass(IRenderPass* pass, const RenderGraphBuildContext& ctx);
@@ -104,8 +107,10 @@ private:
     ShaderVariantManager* variantManager = nullptr;
     DescriptorSetManager* descManager = nullptr;
     VkDescriptorSetLayout frameSetLayout = VK_NULL_HANDLE;
+    ShaderAssetManager* shaderAssets = nullptr;
     VkSampler defaultPassSampler = VK_NULL_HANDLE;
     VkSampler defaultComparisonSampler = VK_NULL_HANDLE;
+    SceneRenderer sceneRenderer;
 
     RGTextureHandle nextHandle = 1;
     std::unordered_map<std::string, RGTextureHandle> nameToHandle;

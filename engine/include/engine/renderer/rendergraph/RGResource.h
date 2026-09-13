@@ -17,6 +17,7 @@ struct RGTextureDesc {
     VkFormat format      = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
     VkImageUsageFlags usage = 0;
+    VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_MAX_ENUM; // infer unless explicitly requested
 };
 
 struct AttachmentDesc {

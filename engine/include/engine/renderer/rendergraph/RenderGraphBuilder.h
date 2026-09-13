@@ -22,11 +22,11 @@ struct PassShaderDesc {
     ShaderParamSet       passParams;
     PipelineStateDesc    pipelineState{};
     std::string          vertexLayout;
-    std::string          materialHeader;
     VkPipelineLayout     pipelineLayout = VK_NULL_HANDLE;
     VkSampleCountFlagBits msaaSamples   = VK_SAMPLE_COUNT_1_BIT;
     bool                 declared       = false;
     bool                 autoBind       = true;
+    std::vector<std::string> comparisonSamplers;
 };
 
 struct PassColorOutput {
@@ -37,6 +37,7 @@ struct PassColorOutput {
 struct PassDepthOutput {
     RGTextureHandle handle = kInvalidRGTextureHandle;
     AttachmentDesc attachment;
+    bool readOnly = false;
 };
 
 struct PassResourceRead {
@@ -53,8 +54,11 @@ public:
     RGTextureHandle CreateTexture(const std::string& name, const RGTextureDesc& desc);
     void WriteColor(RGTextureHandle handle, const AttachmentDesc& desc = {});
     void WriteColorPreserve(RGTextureHandle handle);
+    void WriteColorPreserve(const std::string& name) { WriteColorPreserve(FindTexture(name)); }
     void WriteDepth(RGTextureHandle handle, const AttachmentDesc& desc = {});
     RGTextureHandle ReadTexture(const std::string& resourceName);
+    RGTextureHandle ReadTexture(const std::string& resourceName, const std::string& shaderName);
+    void ReadDepthAttachment(const std::string& resourceName);
 
     /// 声明本图形 pass 使用的 shader。路径相对 shader 搜索目录且不含扩展名。
     void SetShader(const std::string& moduleName);
@@ -66,9 +70,9 @@ public:
     /// 内置材质 pass 使用：Pipeline 仍由 RenderGraph 统一请求和绑定，
     /// 这里只提供由材质/renderer 资源接口决定的 layout。
     void SetPipelineLayout(VkPipelineLayout layout);
-    void SetMaterialHeader(const std::string& header);
     void SetMsaaSamples(VkSampleCountFlagBits samples);
     void SetAutoBindShader(bool enabled);
+    void SetComparisonSampler(const std::string& name) { shaderDesc.comparisonSamplers.push_back(name); }
 
     const std::vector<PassColorOutput>& GetColorOutputs() const { return colorOutputs; }
     const std::vector<PassDepthOutput>& GetDepthOutputs() const { return depthOutputs; }

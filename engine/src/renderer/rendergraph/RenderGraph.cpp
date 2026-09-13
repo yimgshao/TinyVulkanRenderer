@@ -2,6 +2,7 @@
 #include "engine/renderer/rendergraph/RenderGraph.h"
 #include "engine/VulkanUtils.h"
 #include "engine/pso/PsoManager.h"
+#include "engine/renderer/RenderPassContext.h"
 
 #include <algorithm>
 #include <array>
@@ -24,6 +25,7 @@ RGTextureHandle RenderGraphBuilder::CreateTexture(const std::string& name, const
 }
 
 void RenderGraphBuilder::WriteColor(RGTextureHandle handle, const AttachmentDesc& desc) {
+    if (handle == kInvalidRGTextureHandle) throw std::runtime_error("Invalid color attachment");
     colorOutputs.push_back({handle, desc});
 }
 
@@ -38,13 +40,26 @@ void RenderGraphBuilder::WriteDepth(RGTextureHandle handle, const AttachmentDesc
 }
 
 RGTextureHandle RenderGraphBuilder::ReadTexture(const std::string& resourceName) {
+    return ReadTexture(resourceName, resourceName);
+}
+
+void RenderGraphBuilder::ReadDepthAttachment(const std::string& name) {
+    const auto handle = FindTexture(name);
+    if (handle == kInvalidRGTextureHandle) throw std::runtime_error("Missing depth attachment: " + name);
+    AttachmentDesc attachment;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthOutputs.push_back({handle, attachment, true});
+}
+
+RGTextureHandle RenderGraphBuilder::ReadTexture(const std::string& resourceName, const std::string& shaderName) {
     RGTextureHandle handle = FindTexture(resourceName);
     if (handle == kInvalidRGTextureHandle) {
         throw std::runtime_error("RenderGraphBuilder::ReadTexture: resource '" +
                                  resourceName + "' does not exist.");
     }
-    reads.push_back({handle, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, resourceName});
+    reads.push_back({handle, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, shaderName});
     return handle;
 }
 
@@ -74,9 +89,6 @@ void RenderGraphBuilder::SetPipelineLayout(VkPipelineLayout layout) {
     shaderDesc.pipelineLayout = layout;
 }
 
-void RenderGraphBuilder::SetMaterialHeader(const std::string& header) {
-    shaderDesc.materialHeader = header;
-}
 
 void RenderGraphBuilder::SetMsaaSamples(VkSampleCountFlagBits samples) {
     shaderDesc.msaaSamples = samples;
@@ -123,12 +135,16 @@ static VkImageAspectFlags GetAspectFlags(VkFormat format) {
 void RenderGraph::Init(VulkanContext* ctx, PsoManager* manager,
                        ShaderVariantManager* variants,
                        DescriptorSetManager* descriptors,
-                       VkDescriptorSetLayout frameLayout) {
+                       VkDescriptorSetLayout frameLayout, ShaderAssetManager* assets) {
+    shaderAssets = assets;
     context = ctx;
     psoManager = manager;
     variantManager = variants;
     descManager = descriptors;
     frameSetLayout = frameLayout;
+    if (context && shaderAssets)
+        sceneRenderer.init(context->device, *descManager, *psoManager,
+                           *shaderAssets, frameSetLayout);
     if (context && defaultPassSampler == VK_NULL_HANDLE) {
         VkSamplerCreateInfo info{};
         info.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -163,6 +179,7 @@ void RenderGraph::Init(VulkanContext* ctx, PsoManager* manager,
 void RenderGraph::Cleanup() {
     FreePhysicalResources();
     if (context) {
+        sceneRenderer.cleanup();
         for (auto& node : passes) {
             if (descManager) {
                 for (auto& resourceSet : node.autoResourceSets) {
@@ -356,6 +373,10 @@ void RenderGraph::BuildPassPipelines() {
     if (!context || !psoManager) return;
 
     for (auto& node : passes) {
+        if (node.builder.GetDepthOutputs().size() > 1) throw std::runtime_error("A render pass can bind only one depth attachment");
+        for (const auto& color : node.builder.GetColorOutputs())
+            for (const auto& read : node.builder.GetReads())
+                if (color.handle == read.handle) throw std::runtime_error("Cannot sample a writable color attachment; use a separate snapshot");
         const PassShaderDesc& shader = node.builder.GetShaderDesc();
         if (!node.pass || !shader.declared) continue;
         if (shader.shaderConfig.moduleName.empty()) {
@@ -369,7 +390,6 @@ void RenderGraph::BuildPassPipelines() {
         GraphicsPSODesc& desc = runtime->baseDesc;
         desc.shaderConfig     = shader.shaderConfig;
         desc.passParams       = shader.passParams;
-        desc.materialHeader   = shader.materialHeader;
         desc.vertexLayoutName = shader.vertexLayout;
         desc.state            = shader.pipelineState;
         desc.msaaSamples      = shader.msaaSamples;
@@ -391,7 +411,7 @@ void RenderGraph::BuildPassPipelines() {
             ShaderParamSet emptyMaterialParams;
             compiled = variantManager->GetOrCreateVariant(
                 shader.shaderConfig, key, emptyMaterialParams,
-                shader.passParams, shader.materialHeader);
+                shader.passParams);
             if (!compiled) {
                 throw std::runtime_error("RenderGraph: failed to compile shader for pass '" +
                                          node.pass->passName + "'.");
@@ -584,7 +604,7 @@ void RenderGraph::AllocatePhysicalResources() {
 
         VkImageView view = createImageView(context->device, image, info.desc.format,
                                            GetAspectFlags(info.desc.format),
-                                           info.desc.mipLevels, info.desc.arrayLayers);
+                                           info.desc.mipLevels, info.desc.arrayLayers, info.desc.viewType);
 
         res.image      = image;
         res.imageView  = view;
@@ -740,17 +760,23 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmd, const RGPassNode& node) {
     for (const auto& c : node.builder.GetColorOutputs()) {
         addBarrier(c.handle,
                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     }
     for (const auto& d : node.builder.GetDepthOutputs()) {
-        addBarrier(d.handle,
-                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                       VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        VkAccessFlags2 access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+            (d.readOnly ? 0 : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        for (const auto& read : node.builder.GetReads()) if (read.handle == d.handle) {
+            if (!d.readOnly) throw std::runtime_error("Cannot sample a writable depth attachment");
+            stages |= read.stage; access |= read.access;
+        }
+        addBarrier(d.handle, stages, access,
+                   d.readOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     }
     for (const auto& r : node.builder.GetReads()) {
+        if (std::any_of(node.builder.GetDepthOutputs().begin(), node.builder.GetDepthOutputs().end(),
+            [&](const auto& depth) { return depth.handle == r.handle; })) continue;
         VkImageLayout readLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
         if (r.handle != kInvalidRGTextureHandle && r.handle < textureInfos.size()) {
             const VkImageAspectFlags aspect = GetAspectFlags(textureInfos[r.handle].desc.format);
@@ -814,7 +840,7 @@ void RenderGraph::BeginRendering(VkCommandBuffer cmd, const RGPassNode& node) {
         VkRenderingAttachmentInfo attach{};
         attach.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         attach.imageView   = phys.imageView;
-        attach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attach.imageLayout = d.readOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         attach.loadOp      = d.attachment.loadOp;
         attach.storeOp     = d.attachment.storeOp;
         attach.clearValue  = d.attachment.clearValue;
@@ -857,8 +883,22 @@ void RenderGraph::BeginRendering(VkCommandBuffer cmd, const RGPassNode& node) {
 void RenderGraph::BindPassPipeline(VkCommandBuffer cmd,
                                    const FrameContext& frame,
                                    const RGResources& resources,
-                                   RGPassNode& node) {
-    if (!node.pass || !node.pipelineRuntime) return;
+    RGPassNode& node) {
+    if (!node.pass) return;
+    VkExtent2D defaultExtent = frame.renderExtent;
+    if (!node.builder.GetColorOutputs().empty()) {
+        const auto& d = GetTextureDesc(node.builder.GetColorOutputs().front().handle);
+        defaultExtent = {d.width, d.height};
+    } else if (!node.builder.GetDepthOutputs().empty()) {
+        const auto& d = GetTextureDesc(node.builder.GetDepthOutputs().front().handle);
+        defaultExtent = {d.width, d.height};
+    }
+    VkViewport defaultViewport{0, 0, static_cast<float>(defaultExtent.width),
+                               static_cast<float>(defaultExtent.height), 0, 1};
+    VkRect2D defaultScissor{{0, 0}, defaultExtent};
+    vkCmdSetViewport(cmd, 0, 1, &defaultViewport);
+    vkCmdSetScissor(cmd, 0, 1, &defaultScissor);
+    if (!node.pipelineRuntime) return;
     const PassShaderDesc& shader = node.builder.GetShaderDesc();
     if (shader.autoBind) {
         node.pass->BindShaderVariant(cmd);
@@ -997,7 +1037,25 @@ void RenderGraph::Execute(VkCommandBuffer cmd, const FrameContext& frame) {
         InsertBarriers(cmd, node);
         BeginRendering(cmd, node);
         BindPassPipeline(cmd, frame, resources, node);
-        node.pass->Execute(cmd, frame, resources);
+        SceneRenderPassInfo passInfo;
+        passInfo.passIndex = static_cast<size_t>(idx);
+        passInfo.targets.passName = node.pass->passName;
+        const auto& shader = node.builder.GetShaderDesc();
+        passInfo.targets.passParams = shader.passParams;
+        passInfo.targets.msaaSamples = shader.msaaSamples;
+        for (const auto& color : node.builder.GetColorOutputs()) {
+            if (passInfo.targets.colorCount == GraphicsPSODesc::kMaxColorAttachments)
+                throw std::runtime_error("Too many scene pass color attachments");
+            passInfo.targets.colorFormats[passInfo.targets.colorCount++] =
+                GetTextureDesc(color.handle).format;
+        }
+        if (!node.builder.GetDepthOutputs().empty())
+            passInfo.targets.depthFormat =
+                GetTextureDesc(node.builder.GetDepthOutputs().front().handle).format;
+        passInfo.reads = &node.builder.GetReads();
+        passInfo.comparisonSamplers = &shader.comparisonSamplers;
+        RenderPassContext passContext(cmd, frame, resources, sceneRenderer, passInfo);
+        node.pass->Execute(passContext);
         vkCmdEndRendering(cmd);
 
         EmitPresentTransitions(cmd, node);

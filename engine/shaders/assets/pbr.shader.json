@@ -1,0 +1,27 @@
+{
+  "name": "Builtin/PBR",
+  "properties": [
+    {"name":"baseColorFactor","type":"float4","default":[1,1,1,1]},
+    {"name":"emissiveFactor","type":"float4","default":[0,0,0,0]},
+    {"name":"metallicFactor","type":"float","default":1},
+    {"name":"roughnessFactor","type":"float","default":1},
+    {"name":"normalScale","type":"float","default":1},
+    {"name":"occlusionStrength","type":"float","default":0},
+    {"name":"alphaCutoff","type":"float","default":0.5},
+    {"name":"alphaMode","type":"int","default":0},
+    {"name":"doubleSided","type":"int","default":0},
+    {"name":"baseColorMap","type":"texture2D","default":"white"},
+    {"name":"ormMap","type":"texture2D","default":"white"},
+    {"name":"normalMap","type":"texture2D","default":"normal"},
+    {"name":"emissiveMap","type":"texture2D","default":"white"},
+    {"name":"occlusionMap","type":"texture2D","default":"white"}
+  ],
+  "keywords": [
+    {"name":"useNormalMap","default":false},
+    {"name":"useFog","default":false}
+  ],
+  "passes": [
+    {"name":"Shadow","lightMode":"ShadowCaster","module":"materials/pbr_shadow","state":{"depthBias":true},"keywords":[]},
+    {"name":"GBuffer","lightMode":"GBuffer","module":"materials/pbr_gbuffer","keywords":["useNormalMap"]}
+  ]
+}

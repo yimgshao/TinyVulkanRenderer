@@ -47,29 +47,36 @@ std::shared_ptr<const ShaderVariantBytecode> ShaderVariantManager::GetOrCreateVa
     const ShaderModuleConfig& config,
     const ShaderVariantKey&   key,
     const ShaderParamSet&     materialParams,
-    const ShaderParamSet&     passParams,
-    const std::string&        materialHeader) {
+    const ShaderParamSet&     passParams) {
 
-    // 第一级缓存键：模块路径（同一模块的 stage 集合固定，见 ShaderModuleConfig::stages）
-    // 注：materialHeader 与 key.materialType 一一对应（由 MaterialTemplate 注册保证），
-    // 因此缓存键中 materialType 已唯一标识注入的材质头文件。
-    auto& variantCache = programCaches_[config.moduleName];
+    // Program identity includes source, stages, and keyword declarations.
+    std::string compilationKey = config.moduleName;
+    compilationKey += config.preserveBindings ? "\npreserve" : "\noptimize";
+    for (auto stage : config.stages)
+        compilationKey += "\nstage:" + std::to_string(static_cast<uint32_t>(stage));
+    for (const auto& name : config.genericValueParams)
+        compilationKey += "\nkeyword:" + name;
+    auto& variantCache = programCaches_[compilationKey];
 
-    // 1. 查缓存
-    auto it = variantCache.find(key);
+    ShaderParamSet effective;
+    for (const auto& name : config.genericValueParams)
+        effective.set(name, passParams.has(name) ? passParams.getBool(name) : materialParams.getBool(name));
+    ShaderVariantKey effectiveKey;
+    effectiveKey.materialParamHash = effective.hash();
+    // Only compile-affecting values enter the cache, never runtime properties.
+    auto it = variantCache.find(effectiveKey);
     if (it != variantCache.end()) {
         return it->second;
     }
 
     // 2. 委托编译
-    auto bytecode = compiler_->CompileVariant(config, key, materialParams, passParams,
-                                              materialHeader);
+    auto bytecode = compiler_->CompileVariant(config, key, materialParams, passParams);
     if (!bytecode) {
         return nullptr;
     }
 
     // 3. 写入缓存
-    variantCache[key] = bytecode;
+    variantCache[effectiveKey] = bytecode;
     return bytecode;
 }
 

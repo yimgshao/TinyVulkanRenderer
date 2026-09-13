@@ -5,6 +5,7 @@
 #include "engine/renderer/deferred/GBufferPass.h"
 #include "engine/renderer/deferred/DeferredLightingPass.h"
 #include "engine/renderer/renderpass/ShadowPass.h"
+#include "engine/renderer/renderpass/TonemapPass.h"
 #include "engine/pso/PsoManager.h"
 #include "engine/shader/ShaderVariantManager.h"
 
@@ -16,18 +17,6 @@
 
 namespace engine {
 
-namespace {
-
-/// 内置延迟管线 GBuffer pass 的 shader 模块配置。
-/// 引擎核心不硬编码任何具体 pass，内置管线与用户自定义 pass 平级，
-/// 各自在自己的模块里构造 ShaderModuleConfig。
-ShaderModuleConfig MakeGBufferShaderConfig() {
-    ShaderModuleConfig c;
-    c.moduleName = "deferred/gbuffer";
-    return c;
-}
-
-} // anonymous namespace
 
 void DeferredRenderer::validateNewPass(const IRenderPass* pass) const {
     if (!pass) {
@@ -107,8 +96,6 @@ void DeferredRenderer::init(const FrameContext& ctx) {
     variantManager = ctx.variantManager;
     frameSetLayout = ctx.frameSetLayout;
 
-    // 阴影资源（set layout 必须先于材质模板创建，经 extraSetLayouts 注入）
-    setupShadows(ctx);
 
     // IBL 资源（set 3 的 layout 要先于 setupLightingResources 的 pipeline
     // layout 创建）。无环境时加载 1x1 fallback 占位，保证 set 恒可绑定。
@@ -125,22 +112,6 @@ void DeferredRenderer::init(const FrameContext& ctx) {
     }
     setupIBLResources(device, descManager, iblTextures_, iblRes_);
 
-    // Material set layout 由 MaterialTemplate 根据 shader reflection 创建。
-    // 材质层与 forward 完全共用（PbrMaterial + materials/pbr.hlsl），
-    // 材质对「画到 swapchain 还是 GBuffer」无感知。
-    MaterialTemplateCreateInfo tmplInfo{};
-    tmplInfo.variantManager = variantManager;
-    tmplInfo.materialType = materialCfg_.getString("type", "PbrMaterial");
-    tmplInfo.materialHeader = materialCfg_.getString("header", "materials/pbr.hlsl");
-    tmplInfo.alphaMode      = AlphaMode::Opaque;
-    tmplInfo.frameSetLayout = frameSetLayout;
-    tmplInfo.descManager    = descManager;
-    tmplInfo.extraSetLayouts = {shadowSetLayout};
-
-    defaultMaterialTemplate = std::make_unique<MaterialTemplate>();
-    defaultMaterialTemplate->init(device, physicalDevice, tmplInfo);
-    // MaterialTemplate::init 内部已把 material layout 注册到 descManager 并存了 LayoutId
-
     createDefaultPasses(ctx);
 }
 
@@ -148,25 +119,11 @@ void DeferredRenderer::cleanup() {
     orderConstraints_.clear();
     passes_.clear();
 
-    if (defaultMaterialTemplate) {
-        defaultMaterialTemplate->cleanup(device);
-        defaultMaterialTemplate.reset();
-    }
 
     // IBL 资源
     cleanupIBLResources(device, descManager, iblRes_);
     iblTextures_.cleanup(device);
     useIBL_ = false;
-
-    // 阴影资源
-    if (shadowPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
-        shadowPipelineLayout = VK_NULL_HANDLE;
-    }
-    if (shadowSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, shadowSetLayout, nullptr);
-        shadowSetLayout = VK_NULL_HANDLE;
-    }
 
     descManager    = nullptr;
     variantManager = nullptr;
@@ -176,69 +133,26 @@ void DeferredRenderer::cleanup() {
 }
 
 // ------------------------------------------------------------------
-// Shadow resources（与 ForwardRenderer::setupShadows 同一模式）
+// Shadow resources
 // ------------------------------------------------------------------
 
-void DeferredRenderer::setupShadows(const FrameContext& ctx) {
-    (void)ctx;
-
-    // shadow set layout（material set 之后的全局 set）：
-    // 2x SAMPLED_IMAGE + 1x SAMPLER。Set 的分配、写入和绑定由 RenderGraph 完成。
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
-    for (uint32_t i = 0; i < 3; ++i) {
-        bindings[i].binding         = i;
-        bindings[i].descriptorType  = (i < 2) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
-                                              : VK_DESCRIPTOR_TYPE_SAMPLER;
-        bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
-    }
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-    layoutInfo.pBindings    = bindings.data();
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
-                                    &shadowSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("DeferredRenderer: failed to create shadow set layout.");
-    }
-
-}
 
 // ------------------------------------------------------------------
 // Default passes
 // ------------------------------------------------------------------
 
 void DeferredRenderer::createDefaultPasses(const FrameContext& ctx) {
-    // ShadowPass：VS-only 深度 pipeline layout；Shader/PSO 由 RenderGraph 创建。
-    VkPushConstantRange pcRange{VK_SHADER_STAGE_VERTEX_BIT, 0, 96};
-    VkPipelineLayoutCreateInfo pli{};
-    pli.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pli.setLayoutCount         = 0;
-    pli.pushConstantRangeCount = 1;
-    pli.pPushConstantRanges    = &pcRange;
-    if (vkCreatePipelineLayout(device, &pli, nullptr,
-                               &shadowPipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("DeferredRenderer: failed to create shadow pipeline layout.");
-    }
-
     auto shadow = std::make_unique<ShadowPass>();
-    shadow->pipelineLayout = shadowPipelineLayout;
     shadow->depthFormat    = VK_FORMAT_D32_SFLOAT;
     shadow->directionalRes = rendererCfg_.getInt("shadow.directionalRes", 2048);
     shadow->pointRes       = rendererCfg_.getInt("shadow.pointRes", 512);
     shadow->maxDirectionalLights = rendererCfg_.getInt("shadow.maxDirectionalLights", 4);
     shadow->maxPointLights       = rendererCfg_.getInt("shadow.maxPointLights", 4);
 
-    // GBufferPass：MRT 几何 pass，pipeline layout 复用材质模板的
-    //（[frame, material, shadow]，阴影 set 经 extraSetLayouts 注入）。
     auto gbuffer = std::make_unique<GBufferPass>();
     gbuffer->passName        = "GBuffer";
-    gbuffer->pipelineLayout  = defaultMaterialTemplate->getPipelineLayout();
     gbuffer->depthFormat     = VK_FORMAT_D32_SFLOAT;
     gbuffer->msaaSamples     = VK_SAMPLE_COUNT_1_BIT;
-    gbuffer->shaderConfig    = MakeGBufferShaderConfig();
-    gbuffer->materialHeader  = defaultMaterialTemplate->getMaterialHeader();
 
     // DeferredLightingPass：全屏光照，PipelineLayout 由 Shader 反射生成。
     auto lighting = std::make_unique<DeferredLightingPass>();
@@ -248,11 +162,18 @@ void DeferredRenderer::createDefaultPasses(const FrameContext& ctx) {
     lighting->useIBL          = useIBL_;
     lighting->useTonemap      = rendererCfg_.getBool("tonemap", true);
 
+    auto shadowPoint = std::make_unique<ShadowPass>(true);
+    shadowPoint->depthFormat = shadow->depthFormat;
+    shadowPoint->pointRes = shadow->pointRes;
+    shadowPoint->maxPointLights = shadow->maxPointLights;
+
     // 执行顺序由 RenderGraph 依赖推导（GBuffer 读 atlas ⇒ Shadow 先执行；
     // Lighting 读 GBuffer ⇒ GBuffer 先执行），这里保持声明顺序一致。
     passes_.push_back(std::move(shadow));
+    passes_.push_back(std::move(shadowPoint));
     passes_.push_back(std::move(gbuffer));
     passes_.push_back(std::move(lighting));
+    passes_.push_back(std::make_unique<TonemapPass>(rendererCfg_.getBool("tonemap", true)));
 }
 
 // ------------------------------------------------------------------

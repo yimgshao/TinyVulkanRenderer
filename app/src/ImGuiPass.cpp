@@ -14,9 +14,9 @@ void ImGuiPass::Setup(engine::RenderGraphBuilder& builder,
     builder.WriteColor(ctx.hSwapchain, colorDesc);
 }
 
-void ImGuiPass::Execute(VkCommandBuffer cmd, const engine::FrameContext& frame,
-                        const engine::RGResources& resources) {
-    (void)resources;  // 本 pass 不采样 graph 纹理
+void ImGuiPass::Execute(engine::RenderPassContext& context) {
+    const auto cmd = context.GetCommandBuffer();
+    const auto& frame = context.GetFrame();
     if (frame.guiRender) {
         frame.guiRender(cmd);
     }

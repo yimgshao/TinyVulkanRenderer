@@ -27,8 +27,7 @@ public:
 
     void Setup(RenderGraphBuilder& builder,
                const RenderGraphBuildContext& ctx) override;
-    void Execute(VkCommandBuffer cmd, const FrameContext& frame,
-                 const RGResources& resources) override;
+    void Execute(RenderPassContext& context) override;
     // ---- IBL 采样（构建期注入；描述符在 renderer init 时一次写好，
     //      Execute 只绑定不重写。useIBL=false 时绑 fallback 占位）----
     DescriptorSetHandle   iblSet          = DescriptorSetHandle::invalid();

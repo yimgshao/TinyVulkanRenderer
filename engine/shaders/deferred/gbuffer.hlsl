@@ -10,7 +10,7 @@
 #include "materials/material_common.hlsl"
 
 // =============================================================================
-// Vertex shader（与 forward/scene_forward.hlsl 相同的变换逻辑）
+// Vertex shader
 // =============================================================================
 
 VertexOutput vertexMain(VertexInput input)
@@ -47,7 +47,7 @@ struct GBufferOutput
     float4 g3 : SV_Target3;
 };
 
-GBufferOutput fragmentMain(VertexOutput input)
+GBufferOutput fragmentMain(VertexOutput input, bool frontFace : SV_IsFrontFace)
 {
     // Material evaluation（PBR-neutral properties；MASK 的 discard 在材质内完成）
     MaterialInput mi;
@@ -60,7 +60,7 @@ GBufferOutput fragmentMain(VertexOutput input)
 
     GBufferOutput output;
     output.g0 = float4(mat.albedo, mat.ao);
-    output.g1 = float4(mi.normal * 0.5 + 0.5, mat.metallic);
+    output.g1 = float4(evaluateNormal(mi, frontFace) * 0.5 + 0.5, mat.metallic);
     output.g2 = float4(mat.roughness, 0.0, 0.0, 0.0);
     output.g3 = float4(mat.emissive, 0.0);
     return output;

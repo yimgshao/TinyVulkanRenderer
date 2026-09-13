@@ -4,6 +4,7 @@
 #include "engine/SwapChain.h"
 #include "engine/descriptor/DescriptorSetManager.h"
 #include "engine/shader/ShaderVariantManager.h"
+#include "engine/shader/ShaderAssetManager.h"
 #include "engine/pso/PsoManager.h"
 #include "engine/renderer/rendergraph/RenderGraph.h"
 #include "engine/renderer/FrameContext.h"
@@ -14,6 +15,7 @@
 #include <vk_mem_alloc.h>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -39,7 +41,7 @@ class Scene;
  * 典型使用：
  *   RenderModule module;
  *   module.init(&ctx, surface, getSize);
- *   module.setRenderer(std::make_unique<ForwardRenderer>());
+ *   module.setRenderer(std::make_unique<DeferredRenderer>());
  *   module.setScene(scene);
  *
  *   while (running) {
@@ -53,9 +55,9 @@ public:
     using FramebufferSizeFn = std::function<std::pair<int, int>()>;
     using GuiRenderFn       = FrameContext::GuiRenderFn;
 
-    /// userShaderDirs 按顺序优先于引擎内置 shader 目录。
+    /// customShaderDirs 按注册顺序优先于引擎自动提供的内置 Shader 目录。
     void init(VulkanContext* ctx, VkSurfaceKHR surface, FramebufferSizeFn getSize,
-              const std::vector<std::filesystem::path>& userShaderDirs = {});
+              const std::vector<std::filesystem::path>& customShaderDirs = {});
     void cleanup();
 
     /// 设置 renderer（拥有权转移）。
@@ -87,6 +89,7 @@ public:
     VulkanContext*        getVulkanContext()      const { return context; }
     DescriptorSetManager& getDescriptorManager()       { return descManager; }
     ShaderVariantManager& getShaderVariantManager()    { return shaderVariantManager; }
+    ShaderAssetManager& getShaderAssetManager() { return shaderAssets; }
     VkDescriptorSetLayout getFrameSetLayout()    const { return frameSetLayout; }
     IRenderer*      getRenderer()          const { return renderer.get(); }
 
@@ -102,6 +105,7 @@ private:
     // 引擎级服务
     DescriptorSetManager  descManager;
     ShaderVariantManager  shaderVariantManager;
+    ShaderAssetManager shaderAssets;
     PsoManager            psoManager;
     VkDescriptorSetLayout frameSetLayout = VK_NULL_HANDLE;
     LayoutId              frameLayoutId  = kInvalidLayoutId;
@@ -121,6 +125,7 @@ private:
     };
     std::array<FrameData, MAX_FRAMES_IN_FLIGHT> frames;
     uint32_t currentFrame = 0;
+    std::chrono::steady_clock::time_point startTime;
 
     // per-swapchain-image render-finished semaphores
     std::vector<VkSemaphore> imageRenderFinished;

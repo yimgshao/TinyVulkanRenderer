@@ -38,6 +38,8 @@ struct PerFrameData
     float4   cameraPos;
     uint     lightCount;
     float    exposureEV;   // EV100 曝光，输出前 result *= exp2(exposureEV)
+    float    timeSeconds;  // Seconds elapsed since RenderModule initialization.
+    float    _framePadding;
     GPULight lights[8];
 };
 
@@ -57,5 +59,7 @@ struct PerObjectData
     column_major float4x4 model;
 };
 
+#ifndef ENGINE_CUSTOM_OBJECT_PUSH
 [[vk::push_constant]]
 ConstantBuffer<PerObjectData> gObjectData;
+#endif

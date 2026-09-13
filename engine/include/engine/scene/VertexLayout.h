@@ -27,7 +27,7 @@ struct VertexLayoutDesc {
  *
  * - 引擎启动时第一次 Get/GetByName 触发内建格式 (Static) 注册
  * - 用户代码可通过 Register 注册自定义布局，配合相应的 Mesh CPU 结构
- * - MaterialTemplate 根据 PipelineVariantKey::vertexType 在此查询，作为
+ * - PsoManager 根据 ShaderPass::vertexLayout 在此查询，作为
  *   pipeline VkPipelineVertexInputState 的唯一信息源
  */
 class VertexLayoutRegistry {

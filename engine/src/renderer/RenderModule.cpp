@@ -2,6 +2,7 @@
 
 #include "engine/VulkanUtils.h"
 #include "engine/scene/Scene.h"
+#include "engine/shader/ShaderAssetLoader.h"
 
 #include <cstring>
 #include <stdexcept>
@@ -14,7 +15,8 @@ namespace engine {
 
 void RenderModule::init(VulkanContext* ctx, VkSurfaceKHR surface,
                         FramebufferSizeFn getSize,
-                        const std::vector<std::filesystem::path>& userShaderDirs) {
+                        const std::vector<std::filesystem::path>& customShaderDirs) {
+    startTime = std::chrono::steady_clock::now();
     context = ctx;
     initVMA(context->instance, context->physicalDevice, context->device);
 
@@ -26,7 +28,7 @@ void RenderModule::init(VulkanContext* ctx, VkSurfaceKHR surface,
     descManager.init(context->device, context->physicalDevice);
     frameLayoutId = descManager.registerLayout(frameSetLayout, MAX_FRAMES_IN_FLIGHT);
 
-    std::vector<std::filesystem::path> shaderSearchDirs = userShaderDirs;
+    std::vector<std::filesystem::path> shaderSearchDirs = customShaderDirs;
 #ifdef ENGINE_DEFAULT_SHADER_DIR
     shaderSearchDirs.emplace_back(ENGINE_DEFAULT_SHADER_DIR);
 #else
@@ -37,9 +39,14 @@ void RenderModule::init(VulkanContext* ctx, VkSurfaceKHR surface,
     }
 
     psoManager.init(context->device, &shaderVariantManager);
+    shaderAssets.init(shaderVariantManager, descManager);
+    shaderAssets.createDefaults(*context);
+    ShaderAssetLoader builtinShaderLoader;
+    for (const auto& asset : builtinShaderLoader.discoverEngineAssets())
+        shaderAssets.registerAsset(builtinShaderLoader.load(asset));
 
     renderGraph.Init(context, &psoManager, &shaderVariantManager,
-                     &descManager, frameSetLayout);
+                     &descManager, frameSetLayout, &shaderAssets);
 
     createFrameResources();
     createSyncObjects();
@@ -52,15 +59,15 @@ void RenderModule::cleanup() {
 
     vkDeviceWaitIdle(device);
 
+    renderGraph.Cleanup();
     if (renderer) {
         renderer->cleanup();
         renderer.reset();
     }
 
-    renderGraph.Cleanup();
-
     // PSO 统一销毁（pipeline 不依赖 descriptor/shader 模块，只需先于 device 销毁）
     psoManager.cleanup();
+    shaderAssets.cleanup();
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         if (frames[i].imageAvailable != VK_NULL_HANDLE)
@@ -375,11 +382,14 @@ void RenderModule::importSwapchainResource() {
 }
 
 void RenderModule::rebuildRenderGraph() {
+    vkDeviceWaitIdle(context->device);
+    psoManager.cleanup();
+    psoManager.init(context->device, &shaderVariantManager);
     // RenderGraph::Cleanup() 末尾会把它持有的 context 置空，所以重建前必须
     // 再 Init 一次，否则 Compile 阶段 AllocatePhysicalResources 会解引用 nullptr。
     renderGraph.Cleanup();
     renderGraph.Init(context, &psoManager, &shaderVariantManager,
-                     &descManager, frameSetLayout);
+                     &descManager, frameSetLayout, &shaderAssets);
     hSwapchain = kInvalidRGTextureHandle;
     importSwapchainResource();
 
@@ -408,6 +418,8 @@ FrameContext RenderModule::makeFrameContext(uint32_t frameIndex) {
     ctx.renderExtent     = swapChain ? swapChain->getExtent() : VkExtent2D{0, 0};
     ctx.scene            = scene;
     ctx.frameIndex       = frameIndex;
+    ctx.timeSeconds      = std::chrono::duration<float>(
+        std::chrono::steady_clock::now() - startTime).count();
     ctx.frameSet         = frames[frameIndex].frameSet;
     return ctx;
 }

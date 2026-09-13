@@ -60,6 +60,9 @@ static std::wstring ToWide(const std::string& s) {
 
 /// camelCase -> UPPER_SNAKE（"useNormalMap" -> "USE_NORMAL_MAP"）
 static std::string CamelToUpperSnake(const std::string& name) {
+    if (std::none_of(name.begin(), name.end(), [](unsigned char c) {
+            return c >= 'a' && c <= 'z';
+        })) return name;
     std::string out;
     for (char c : name) {
         if (c >= 'A' && c <= 'Z' && !out.empty()) out += '_';
@@ -109,6 +112,16 @@ static void AddBinding(ShaderReflection& out, const DescriptorBindingDesc& b) {
     }
     for (auto& existing : setLayout->bindings) {
         if (existing.binding == b.binding) {
+            // DXC preserve-bindings retains the unused sampler half of an
+            // explicitly combined image/sampler, even after combining the image.
+            if (existing.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+                b.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER && b.name == existing.name + "Sampler") {
+                existing.stageFlags |= b.stageFlags;
+                return;
+            }
+            if (existing.descriptorType != b.descriptorType || existing.descriptorCount != b.descriptorCount ||
+                existing.blockSize != b.blockSize || existing.members != b.members || existing.imageViewType != b.imageViewType)
+                throw std::runtime_error("incompatible stage resource binding: " + b.name);
             existing.stageFlags |= b.stageFlags;
             return;
         }
@@ -164,7 +177,8 @@ static void ReflectStage(const std::vector<uint32_t>& spv,
     if (spv.empty()) return;
 
     spvc_context context = nullptr;
-    if (spvc_context_create(&context) != SPVC_SUCCESS) return;
+    if (spvc_context_create(&context) != SPVC_SUCCESS) throw std::runtime_error("Cannot create reflection context");
+    struct ContextGuard { spvc_context value; ~ContextGuard() { spvc_context_destroy(value); } } guard{context};
 
     spvc_parsed_ir ir = nullptr;
     spvc_compiler compiler = nullptr;
@@ -192,6 +206,46 @@ static void ReflectStage(const std::vector<uint32_t>& spv,
                 desc.descriptorCount = 1;
                 desc.stageFlags      = stages;
                 desc.name            = list[i].name ? list[i].name : "";
+                auto resourceTypeHandle = spvc_compiler_get_type_handle(compiler, list[i].type_id);
+                for (unsigned dim = 0; dim < spvc_type_get_num_array_dimensions(resourceTypeHandle); ++dim) {
+                    if (!spvc_type_array_dimension_is_literal(resourceTypeHandle, dim))
+                        throw std::runtime_error("Runtime descriptor arrays are unsupported: " + desc.name);
+                    desc.descriptorCount *= spvc_type_get_array_dimension(resourceTypeHandle, dim);
+                }
+                if (vkType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || vkType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
+                    const bool array = spvc_type_get_image_arrayed(resourceTypeHandle);
+                    switch (spvc_type_get_image_dimension(resourceTypeHandle)) {
+                        case SpvDim2D: desc.imageViewType = array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D; break;
+                        case SpvDim3D: desc.imageViewType = VK_IMAGE_VIEW_TYPE_3D; break;
+                        case SpvDimCube: desc.imageViewType = array ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : VK_IMAGE_VIEW_TYPE_CUBE; break;
+                        default: throw std::runtime_error("Unsupported sampled image dimension: " + desc.name);
+                    }
+                }
+                if (vkType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+                    auto type = spvc_compiler_get_type_handle(compiler, list[i].base_type_id);
+                    size_t size = 0;
+                    if (spvc_compiler_get_declared_struct_size(compiler, type, &size) != SPVC_SUCCESS)
+                        throw std::runtime_error("cannot reflect uniform block: " + desc.name);
+                    desc.blockSize = static_cast<uint32_t>(size);
+                    for (unsigned member = 0; member < spvc_type_get_num_member_types(type); ++member) {
+                        UniformMemberDesc m;
+                        m.name = spvc_compiler_get_member_name(compiler, list[i].base_type_id, member);
+                        unsigned offset = 0;
+                        size_t memberSize = 0;
+                        if (spvc_compiler_type_struct_member_offset(compiler, type, member, &offset) != SPVC_SUCCESS ||
+                            spvc_compiler_get_declared_struct_member_size(compiler, type, member, &memberSize) != SPVC_SUCCESS)
+                            throw std::runtime_error("cannot reflect uniform member: " + m.name);
+                        auto memberType = spvc_compiler_get_type_handle(compiler, spvc_type_get_member_type(type, member));
+                        m.array = spvc_type_get_num_array_dimensions(memberType) != 0;
+                        m.offset = offset;
+                        m.size = static_cast<uint32_t>(memberSize);
+                        m.columns = spvc_type_get_columns(memberType);
+                        m.components = spvc_type_get_vector_size(memberType);
+                        auto base = spvc_type_get_basetype(memberType);
+                        m.integer = base == SPVC_BASETYPE_INT32 || base == SPVC_BASETYPE_UINT32 || base == SPVC_BASETYPE_BOOLEAN;
+                        desc.members.push_back(std::move(m));
+                    }
+                }
                 AddBinding(out, desc);
             }
         };
@@ -203,6 +257,14 @@ static void ReflectStage(const std::vector<uint32_t>& spv,
         addResources(SPVC_RESOURCE_TYPE_STORAGE_BUFFER,  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         addResources(SPVC_RESOURCE_TYPE_STORAGE_IMAGE,   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
         addResources(SPVC_RESOURCE_TYPE_SUBPASS_INPUT,   VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT);
+
+        if (stages == VK_SHADER_STAGE_FRAGMENT_BIT) {
+            const spvc_reflected_resource* outputs = nullptr;
+            size_t count = 0;
+            if (spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_STAGE_OUTPUT, &outputs, &count) == SPVC_SUCCESS)
+                for (size_t i = 0; i < count; ++i)
+                    out.fragmentOutputLocations.push_back(spvc_compiler_get_decoration(compiler, outputs[i].id, SpvDecorationLocation));
+        }
 
         // Push constant
         {
@@ -270,7 +332,6 @@ static void ReflectStage(const std::vector<uint32_t>& spv,
                   << spvc_context_get_last_error_string(context) << std::endl;
     }
 
-    spvc_context_destroy(context);
 }
 
 } // anonymous namespace
@@ -353,13 +414,15 @@ public:
     // -------------------------------------------------------------------------
     std::vector<uint32_t> CompileStage(const DxcBuffer& source,
                                         ShaderStage stage,
-                                        const std::vector<std::wstring>& defineArgs) {
+                                        const std::vector<std::wstring>& defineArgs,
+                                        bool preserveBindings) {
         std::vector<std::wstring> argStorage;
         argStorage.reserve(defineArgs.size() + 16 + searchDirs_.size() * 2);
         argStorage.push_back(L"-spirv");
         argStorage.push_back(L"-fspv-target-env=vulkan1.2");
         argStorage.push_back(L"-fspv-entrypoint-name=main");
         argStorage.push_back(L"-fvk-use-gl-layout");
+        if (preserveBindings) argStorage.push_back(L"-fspv-preserve-bindings");
         argStorage.push_back(L"-T");
         argStorage.push_back(ToWide(StageToProfile(stage)));
         argStorage.push_back(L"-E");
@@ -410,8 +473,7 @@ public:
     // -------------------------------------------------------------------------
     std::shared_ptr<ShaderVariantBytecode> CompileVariant(
         const ShaderModuleConfig& config, const ShaderVariantKey& key,
-        const ShaderParamSet& materialParams, const ShaderParamSet& passParams,
-        const std::string& materialHeader) {
+        const ShaderParamSet& materialParams, const ShaderParamSet& passParams) {
         if (!isInitialized_) {
             std::cerr << "[DxcCompiler] Not initialized!" << std::endl;
             return nullptr;
@@ -422,13 +484,9 @@ public:
             //   -D<MaterialType>           材质类型选择（uber-shader 分段）
             //   -DUPPER_SNAKE=1/0          布尔变体参数
             std::vector<std::wstring> defineArgs;
-            if (!key.materialType.empty() && key.materialType != "Unknown") {
-                defineArgs.push_back(ToWide("-D" + key.materialType));
-            }
 
             {
-                std::cout << "[DxcCompiler] Compiling: module=" << config.moduleName
-                          << ", material=" << key.materialType;
+                std::cout << "[DxcCompiler] Compiling: module=" << config.moduleName;
                 for (const auto& paramName : config.genericValueParams) {
                     std::string value = ResolveParamValue(paramName, materialParams, passParams);
                     defineArgs.push_back(ToWide("-D" + CamelToUpperSnake(paramName) + "=" + value));
@@ -438,14 +496,8 @@ public:
                 std::cout << std::endl;
             }
 
-            // 合成根编译单元：材质实现（可选）在前，pass 模块在后。
-            // pass 模块不 include 任何材质文件，两者由编译期注入配对，
-            // 新增材质/新增 pass 互不感知。include 路径由 -I 搜索目录解析。
-            std::string sourceText;
-            if (!materialHeader.empty()) {
-                sourceText += "#include \"" + materialHeader + "\"\n";
-            }
-            sourceText += "#include \"" + config.moduleName + ".hlsl\"\n";
+            // Each module is a complete user-owned compilation unit.
+            std::string sourceText = "#include \"" + config.moduleName + ".hlsl\"\n";
 
             DxcBuffer source{};
             source.Ptr      = sourceText.data();
@@ -455,7 +507,7 @@ public:
             // 逐 stage 编译（入口函数名按固定约定）
             auto bytecode = std::make_shared<ShaderVariantBytecode>();
             for (ShaderStage stage : config.stages) {
-                auto spv = CompileStage(source, stage, defineArgs);
+                auto spv = CompileStage(source, stage, defineArgs, config.preserveBindings);
                 switch (stage) {
                     case ShaderStage::Vertex:   bytecode->vertexSpirv   = std::move(spv); break;
                     case ShaderStage::Fragment: bytecode->fragmentSpirv = std::move(spv); break;
@@ -519,9 +571,8 @@ void DxcCompiler::Cleanup() { impl_->Cleanup(); }
 
 std::shared_ptr<ShaderVariantBytecode> DxcCompiler::CompileVariant(
     const ShaderModuleConfig& config, const ShaderVariantKey& key,
-    const ShaderParamSet& materialParams, const ShaderParamSet& passParams,
-    const std::string& materialHeader) {
-    return impl_->CompileVariant(config, key, materialParams, passParams, materialHeader);
+    const ShaderParamSet& materialParams, const ShaderParamSet& passParams) {
+    return impl_->CompileVariant(config, key, materialParams, passParams);
 }
 
 void DxcCompiler::ClearCaches() { impl_->ClearCaches(); }

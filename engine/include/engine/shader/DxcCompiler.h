@@ -16,7 +16,6 @@ namespace engine {
 // 使用 PIMPL 隐藏 DXC / spirv-cross 头文件，避免向 includer 泄漏第三方类型。
 //
 // 变体机制：Slang 泛型特化被替换为主流的预处理器宏排列组合：
-//   - 材质类型（ShaderVariantKey::materialType） -> -D<MaterialType>
 //   - 布尔参数（ShaderModuleConfig::genericValueParams）-> -DUPPER_SNAKE=0/1
 //
 // 编译结果（SPIR-V + ShaderReflection）由调用方缓存，此类不负责。
@@ -51,16 +50,12 @@ public:
 
     /// 编译一个 shader 变体。
     /// materialParams / passParams 仅在缓存缺失时用于构建 -D 宏定义。
-    /// materialHeader 非空时，编译器会合成一个根编译单元：
-    /// 先 #include 材质头文件（提供 evaluateMaterial / evaluateVertexOffset），
-    /// 再 #include pass 模块——pass 与材质互不感知，由编译期注入配对。
     /// 返回完整的 SPIR-V + ShaderReflection，失败返回 nullptr。
     std::shared_ptr<ShaderVariantBytecode> CompileVariant(
         const ShaderModuleConfig& config,
         const ShaderVariantKey&   key,
         const ShaderParamSet&     materialParams,
-        const ShaderParamSet&     passParams,
-        const std::string&        materialHeader = "");
+        const ShaderParamSet&     passParams);
 
     // -------------------------------------------------------------------------
     // 缓存管理

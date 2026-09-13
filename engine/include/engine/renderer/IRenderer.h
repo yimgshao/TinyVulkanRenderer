@@ -12,7 +12,7 @@ class RenderGraph;
  * IRenderer -- 一个完整渲染管线的最小抽象。
  *
  * RenderModule 持有唯一的 IRenderer 实例并驱动其生命周期。
- * 一个具体管线（Forward / Deferred / PathTracing 等）只需关注：
+ * 一个具体管线（Deferred / PathTracing 等）只需关注：
  *   - 自身需要的材质模板 / descriptor layout 创建（init / cleanup）
  *   - 向 RenderGraph 注册自己的 pass（buildRenderGraph）
  *   - 每帧向已注册 pass 注入可变数据（onFrame，可选）
@@ -40,7 +40,7 @@ class IRenderer {
 public:
     virtual ~IRenderer() = default;
 
-    /// 管线类型标识（"Forward", "Deferred", "PathTracer" 等）。
+    /// 管线类型标识（"Deferred", "PathTracer" 等）。
     virtual const char* getPipelineName() const = 0;
 
     /// 一次性初始化：创建材质模板、descriptor layout 等持久资源。

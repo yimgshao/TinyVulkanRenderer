@@ -43,6 +43,7 @@ struct FrameContext {
     // ---- 每帧字段（仅 onFrame 阶段有意义） ----
     Scene*                scene             = nullptr;
     uint32_t              frameIndex        = 0;
+    float                 timeSeconds       = 0.0f;
     DescriptorSetHandle   frameSet          = {};
     GuiRenderFn           guiRender;
 };

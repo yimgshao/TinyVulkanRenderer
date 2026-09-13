@@ -4,7 +4,7 @@
 // VS：SV_VertexID 生成全屏三角形，无顶点输入（PSO 侧 vertexLayoutName = ""）。
 // FS：采样 GBuffer 重建材质参数，由深度反推世界坐标，
 //     光照流程（ambient + 逐光源 evalPBR × 阴影 + emissive + 曝光）
-//     与 forward/scene_forward.hlsl 保持一致。
+//     与 common/types.hlsl 的 Frame Set ABI 保持一致。
 
 #include "common/types.hlsl"
 #include "common/shadow.hlsl"
@@ -113,10 +113,7 @@ float4 fragmentMain(FullscreenOutput input) : SV_Target
     // 3. Emissive
     result += mat.emissive;
 
-    // 4. 曝光（EV100，线性缩放）+ tonemap（线性 HDR → [0,1]，sRGB 编码由
-    //    SRGB swapchain 硬件完成）
-    result *= exp2(gFrameData.exposureEV);
-    result = applyTonemap(result);
+    // Output linear HDR; exposure and tonemap run in the following pass.
 
     return float4(result, 1.0);
 }

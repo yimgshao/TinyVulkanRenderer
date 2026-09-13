@@ -50,12 +50,16 @@ void DeferredLightingPass::Setup(RenderGraphBuilder& builder,
     colorDesc.loadOp     = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorDesc.storeOp    = VK_ATTACHMENT_STORE_OP_STORE;
     colorDesc.clearValue = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-    builder.WriteColor(ctx.hSwapchain, colorDesc);
+    RGTextureDesc hdr{};
+    hdr.width = ctx.renderExtent.width; hdr.height = ctx.renderExtent.height;
+    hdr.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    hdr.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    builder.WriteColor(builder.CreateTexture("SceneColor", hdr), colorDesc);
 }
 
-void DeferredLightingPass::Execute(VkCommandBuffer cmd, const FrameContext& frame,
-                                   const RGResources& resources) {
-    (void)resources;
+void DeferredLightingPass::Execute(RenderPassContext& context) {
+    const auto cmd = context.GetCommandBuffer();
+    const auto& frame = context.GetFrame();
     if (GetPipelineLayout() == VK_NULL_HANDLE) return;
 
     const VkExtent2D extent = frame.renderExtent;
@@ -80,7 +84,7 @@ void DeferredLightingPass::Execute(VkCommandBuffer cmd, const FrameContext& fram
         GetPipelineLayout(), 0, 1, &frameSet.bufferIndex, &frameSet.offset);
 
     // 绑定 Set 3（IBL；描述符在 renderer init 时一次写好，无需每帧重写）
-    if (iblSet.isValid()) {
+    if (useIBL && iblSet.isValid()) {
         ext::vkCmdSetDescriptorBufferOffsetsEXT(
             cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, GetPipelineLayout(),
             iblSetIndex, 1, &iblSet.bufferIndex, &iblSet.offset);

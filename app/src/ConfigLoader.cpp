@@ -1,24 +1,24 @@
 #include "app/ConfigLoader.h"
 
+#include "engine/shader/ShaderAssetLoader.h"
+#include "engine/shader/ShaderAssetManager.h"
+
 #include "json.hpp" // nlohmann/json（third_party/tinygltf 自带）
 
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <algorithm>
+#include <stdexcept>
 
 namespace app {
 
 namespace {
 
-std::filesystem::path projectRoot() {
+std::filesystem::path configRoot() {
     // <root>/app/src/ConfigLoader.cpp → 上三级为项目根
     std::filesystem::path srcFile = __FILE__;
-    return srcFile.parent_path().parent_path().parent_path();
-}
-
-bool endsWith(const std::string& s, const std::string& suffix) {
-    return s.size() >= suffix.size() &&
-           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return srcFile.parent_path().parent_path().parent_path() / "configs";
 }
 
 engine::Config jsonToConfig(const nlohmann::json& j, const std::string& ctx) {
@@ -89,11 +89,27 @@ std::string resolvePath(const std::filesystem::path& baseDir,
 
 } // anonymous namespace
 
-engine::Config ConfigLoader::load(const std::string& mainJsonPath) {
+void ConfigLoader::addCustomShaderSearchPath(std::filesystem::path path) {
+    if (path.empty()) throw std::invalid_argument("Custom shader search path must not be empty");
+    if (path.is_relative()) path = std::filesystem::absolute(path);
+    path = path.lexically_normal();
+    if (std::find(customShaderSearchPaths_.begin(), customShaderSearchPaths_.end(), path) ==
+        customShaderSearchPaths_.end()) {
+        customShaderSearchPaths_.push_back(std::move(path));
+    }
+}
+
+void ConfigLoader::registerShaderAssets(engine::ShaderAssetManager& manager) const {
+    engine::ShaderAssetLoader loader(customShaderSearchPaths_);
+    for (const auto& asset : loader.discoverCustomAssets())
+        manager.registerAsset(loader.load(asset));
+}
+
+engine::Config ConfigLoader::load(const std::string& configFile) {
     engine::Config root;
 
-    std::filesystem::path entry(mainJsonPath);
-    if (entry.is_relative()) entry = projectRoot() / entry;
+    std::filesystem::path entry(configFile);
+    if (entry.is_relative()) entry = configRoot() / entry;
 
     if (!parseJsonFile(entry, root, "main")) {
         std::cerr << "[Config] fall back to built-in defaults.\n";
@@ -102,21 +118,17 @@ engine::Config ConfigLoader::load(const std::string& mainJsonPath) {
 
     const std::filesystem::path baseDir = entry.parent_path();
 
-    // renderer / material：字符串 → 子配置文件或内联 type；已是 section（内联对象）则跳过
-    for (const char* key : {"renderer", "material"}) {
+    // renderer：字符串 → 子配置文件；已是 section（内联对象）则跳过
+    for (const char* key : {"renderer"}) {
         auto it = root.values().find(key);
         if (it == root.values().end()) continue;
         const std::string* v = std::get_if<std::string>(&it->second);
         if (!v) continue;
 
         engine::Config sub;
-        if (endsWith(*v, ".json")) {
-            if (!parseJsonFile(resolvePath(baseDir, *v), sub, key)) {
-                std::cerr << "[Config] ignore '" << key << "' sub-config.\n";
-                continue;
-            }
-        } else {
-            sub.set("type", *v);
+        if (!parseJsonFile(resolvePath(baseDir, *v), sub, key)) {
+            std::cerr << "[Config] ignore '" << key << "' sub-config.\n";
+            continue;
         }
         root.setSection(key, std::move(sub));
     }
@@ -132,15 +144,6 @@ engine::Config ConfigLoader::load(const std::string& mainJsonPath) {
     const std::string iblPath = root.getString("ibl.path", "");
     if (!iblPath.empty()) {
         root.set("ibl.path", resolvePath(baseDir, iblPath));
-    }
-
-    // shaderDirs：每个目录相对入口配置文件解析，保持数组顺序。
-    auto shaderDirs = root.getStringList("shaderDirs");
-    for (auto& dir : shaderDirs) {
-        dir = resolvePath(baseDir, dir);
-    }
-    if (!shaderDirs.empty()) {
-        root.set("shaderDirs", shaderDirs);
     }
 
     return root;

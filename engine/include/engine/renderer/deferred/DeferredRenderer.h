@@ -5,7 +5,7 @@
 #include "engine/renderer/ibl/IBLResources.h"
 #include "engine/renderer/renderpass/IRenderPass.h"
 #include "engine/scene/IBLTextures.h"
-#include "engine/scene/MaterialTemplate.h"
+#include "engine/descriptor/DescriptorSetManager.h"
 
 #include <vulkan/vulkan.h>
 #include <memory>
@@ -18,7 +18,7 @@ namespace engine {
 class Scene;
 
 /**
- * DeferredRenderer -- 延迟渲染管线，与 ForwardRenderer 平级。
+ * DeferredRenderer -- 引擎默认且当前唯一的栅格渲染管线。
  *
  * 实现 IRenderer 接口，由 RenderModule 持有并驱动。
  *
@@ -31,12 +31,10 @@ class Scene;
 class DeferredRenderer : public IRenderer {
 public:
     /// @param rendererCfg 渲染器配置（shadow.* 等），空 Config = 全默认
-    /// @param materialCfg 材质配置（type / header），空 Config = 全默认
     /// @param iblPath     IBL 烘焙产物目录（.ibl 四件套），空 = 关闭 IBL
     explicit DeferredRenderer(const Config& rendererCfg = {},
-                              const Config& materialCfg = {},
                               const std::string& iblPath = "")
-        : rendererCfg_(rendererCfg), materialCfg_(materialCfg),
+        : rendererCfg_(rendererCfg),
           iblPath_(iblPath) {}
 
     void init(const FrameContext& ctx) override;
@@ -45,9 +43,6 @@ public:
     void buildRenderGraph(RenderGraph& rg,
                           const RenderGraphBuildContext& ctx) override;
 
-    MaterialTemplate* getDefaultMaterialTemplate() const {
-        return defaultMaterialTemplate.get();
-    }
 
     /// 按名字和类型获取 pass（用于运行时修改参数）。
     template<typename T>
@@ -84,23 +79,14 @@ protected:
 private:
     void validateNewPass(const IRenderPass* pass) const;
     void createDefaultPasses(const FrameContext& ctx);
-    /// 阴影资源装配：shadow set layout（注入材质模板 extraSetLayouts）
-    /// 与 ShadowPass 的 VS-only pipeline layout。描述符由 RenderGraph 管理。
-    /// 与 ForwardRenderer::setupShadows 同一模式。
-    void setupShadows(const FrameContext& ctx);
 
     Config rendererCfg_;
-    Config materialCfg_;
 
     DescriptorSetManager* descManager     = nullptr;
     ShaderVariantManager* variantManager  = nullptr;
     VkDescriptorSetLayout frameSetLayout  = VK_NULL_HANDLE;
 
-    std::unique_ptr<MaterialTemplate> defaultMaterialTemplate;
 
-    // ---- 内置阴影资源（GBufferPass 与 DeferredLightingPass 共用）----
-    VkDescriptorSetLayout shadowSetLayout      = VK_NULL_HANDLE;
-    VkPipelineLayout      shadowPipelineLayout = VK_NULL_HANDLE;
 
     // ---- IBL 资源（set 3；无环境时为 1x1 fallback 占位，恒可绑定）----
     std::string  iblPath_;

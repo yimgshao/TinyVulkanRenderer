@@ -36,7 +36,6 @@ enum class ShaderStage : uint32_t {
 // =============================================================================
 
 struct ShaderVariantKey {
-    std::string materialType;  // 材质类型名（HLSL 宏名），如 "BlinnPhongMaterial"
     uint64_t    materialParamHash = 0;
     uint64_t    passParamHash     = 0;
 
@@ -48,6 +47,7 @@ struct ShaderVariantKey {
 // =============================================================================
 
 struct ShaderModuleConfig {
+    bool preserveBindings = false;
     std::string moduleName;  // 相对 shader 目录的路径（无扩展名），同时作为变体缓存键
 
     /// 布尔变体参数名，按声明顺序排列。
@@ -67,6 +67,17 @@ struct ShaderModuleConfig {
 // 四、Shader Reflection
 // =============================================================================
 
+struct UniformMemberDesc {
+    std::string name;
+    uint32_t offset = 0;
+    uint32_t size = 0;
+    uint32_t columns = 1;
+    uint32_t components = 1;
+    bool integer = false;
+    bool array = false;
+    bool operator==(const UniformMemberDesc&) const = default;
+};
+
 struct DescriptorBindingDesc {
     uint32_t           setIndex        = 0;
     uint32_t           binding         = 0;
@@ -74,6 +85,9 @@ struct DescriptorBindingDesc {
     uint32_t           descriptorCount = 1;
     VkShaderStageFlags stageFlags      = 0;
     std::string        name;
+    uint32_t blockSize = 0;
+    std::vector<UniformMemberDesc> members;
+    VkImageViewType imageViewType = VK_IMAGE_VIEW_TYPE_MAX_ENUM;
 };
 
 struct DescriptorSetLayoutDesc {
@@ -87,6 +101,7 @@ struct ShaderReflection {
     VkVertexInputBindingDescription                 vertexBinding{};
     std::vector<VkVertexInputAttributeDescription>  vertexAttrs;
     bool                                            hasVertexInput = false;
+    std::vector<uint32_t> fragmentOutputLocations;
 
     const DescriptorBindingDesc* findBinding(uint32_t setIndex,
                                              std::string_view name) const;
@@ -135,8 +150,7 @@ public:
         const ShaderModuleConfig& config,
         const ShaderVariantKey&   key,
         const ShaderParamSet&     materialParams,
-        const ShaderParamSet&     passParams,
-        const std::string&        materialHeader = "");
+        const ShaderParamSet&     passParams);
 
     // -------------------------------------------------------------------------
     // 缓存管理
@@ -160,10 +174,9 @@ namespace std {
 template<>
 struct hash<engine::ShaderVariantKey> {
     std::size_t operator()(const engine::ShaderVariantKey& key) const {
-        std::size_t h1 = std::hash<std::string>{}(key.materialType);
         std::size_t h2 = std::hash<uint64_t>{}(key.materialParamHash);
         std::size_t h3 = std::hash<uint64_t>{}(key.passParamHash);
-        return h1 ^ (h2 << 1) ^ (h3 << 2);
+        return (h2 << 1) ^ (h3 << 2);
     }
 };
 } // namespace std

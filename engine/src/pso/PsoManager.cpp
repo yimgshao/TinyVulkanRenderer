@@ -4,6 +4,7 @@
 #include "engine/shader/ShaderVariantManager.h"
 
 #include <array>
+#include <algorithm>
 #include <stdexcept>
 #include <vector>
 
@@ -30,12 +31,21 @@ void PsoManager::cleanup() {
 
 VkPipeline PsoManager::getOrCreate(const GraphicsPSODesc& desc) {
     GraphicsPSOKey key;
+    key.layout = desc.layout;
+    key.compilationSignature = desc.shaderConfig.moduleName;
+    key.compilationSignature += desc.shaderConfig.preserveBindings ? ":preserve" : ":optimize";
+    for (auto stage : desc.shaderConfig.stages)
+        key.compilationSignature += ":stage:" + std::to_string(static_cast<uint32_t>(stage));
+    for (const auto& keyword : desc.shaderConfig.genericValueParams)
+        key.compilationSignature += ":keyword:" + keyword;
     key.passName          = desc.passName;
     key.moduleName        = desc.shaderConfig.moduleName;
     key.vertexLayout      = desc.vertexLayoutName;
-    key.materialType      = desc.variantKey.materialType;
-    key.materialParamHash = desc.variantKey.materialParamHash;
-    key.passParamHash     = desc.variantKey.passParamHash;
+    ShaderParamSet effective;
+    for (const auto& name : desc.shaderConfig.genericValueParams)
+        effective.set(name, desc.passParams.has(name) ? desc.passParams.getBool(name) : desc.materialParams.getBool(name));
+    key.materialParamHash = effective.hash();
+    key.passParamHash = 0;
     key.state             = desc.state;
     key.depthFormat       = desc.depthFormat;
     key.msaaSamples       = desc.msaaSamples;
@@ -61,13 +71,21 @@ VkPipeline PsoManager::createPSO(const GraphicsPSODesc& desc) {
 
     auto bytecode = variantManager->GetOrCreateVariant(
         desc.shaderConfig, desc.variantKey, desc.materialParams,
-        desc.passParams, desc.materialHeader);
+        desc.passParams);
     if (!bytecode) {
         throw std::runtime_error(
             "PsoManager::createPSO: failed to compile shader variant '" +
             desc.shaderConfig.moduleName + "'.");
     }
 
+    for (auto location : bytecode->reflection.fragmentOutputLocations)
+        if (location >= desc.colorCount) throw std::runtime_error("Fragment output has no attachment: " + desc.shaderConfig.moduleName);
+    const auto* checkedLayout = desc.vertexLayoutName.empty() ? nullptr : VertexLayoutRegistry::GetByName(desc.vertexLayoutName);
+    for (const auto& input : bytecode->reflection.vertexAttrs) {
+        if (!checkedLayout || std::none_of(checkedLayout->attributes.begin(), checkedLayout->attributes.end(),
+            [&](const auto& attr) { return attr.location == input.location && attr.format == input.format; }))
+            throw std::runtime_error("Vertex input incompatible with layout: " + desc.shaderConfig.moduleName);
+    }
     // ---- shader stages：按编译结果动态组装 ----
     // 图形管线必须有 vertex stage；fragment 可为空（VS-only 深度管线合法）。
     struct StageSrc {
@@ -132,14 +150,18 @@ VkPipeline PsoManager::createPSO(const GraphicsPSODesc& desc) {
         }
     }
 
+    std::vector<VkVertexInputAttributeDescription> activeAttributes;
+    if (vlayout) for (const auto& attr : vlayout->attributes)
+        if (std::any_of(bytecode->reflection.vertexAttrs.begin(), bytecode->reflection.vertexAttrs.end(),
+            [&](const auto& used) { return attr.location == used.location; })) activeAttributes.push_back(attr);
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     if (vlayout) {
         vertexInputInfo.vertexBindingDescriptionCount   = 1;
         vertexInputInfo.pVertexBindingDescriptions      = &vlayout->binding;
         vertexInputInfo.vertexAttributeDescriptionCount =
-            static_cast<uint32_t>(vlayout->attributes.size());
-        vertexInputInfo.pVertexAttributeDescriptions    = vlayout->attributes.data();
+            static_cast<uint32_t>(activeAttributes.size());
+        vertexInputInfo.pVertexAttributeDescriptions    = activeAttributes.data();
     }
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};

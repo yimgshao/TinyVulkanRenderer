@@ -1,8 +1,8 @@
 #include "engine/scene/GLTFLoader.h"
 #include "engine/scene/Scene.h"
 #include "engine/scene/Mesh.h"
-#include "engine/scene/MaterialTemplate.h"
-#include "engine/scene/MaterialInstance.h"
+#include "engine/shader/ShaderAsset.h"
+#include "engine/scene/Material.h"
 #include "engine/scene/Texture.h"
 #include "engine/scene/RenderObject.h"
 #include "engine/scene/Camera.h"
@@ -120,7 +120,7 @@ glm::mat4 getNodeMatrix(const tinygltf::Node& node) {
 void GLTFLoader::load(const std::string& directory, Scene* scene,
                       VkDevice device, VkPhysicalDevice physicalDevice,
                       VkCommandPool commandPool, VkQueue graphicsQueue,
-                      MaterialTemplate* materialTemplate) {
+                      ShaderAsset* shader) {
     std::filesystem::path dir(directory);
     std::filesystem::path gltfPath;
 
@@ -196,82 +196,43 @@ void GLTFLoader::load(const std::string& directory, Scene* scene,
     }
 
     // Load materials
-    std::vector<MaterialInstance*> materials;
+    std::vector<Material*> materials;
     materials.reserve(model.materials.size());
     for (const auto& gltfMat : model.materials) {
-        auto* mat = scene->createMaterialInstance(materialTemplate);
+        auto* mat = scene->createMaterial(*shader);
 
-        MaterialParams params{};
         const auto& pbr = gltfMat.pbrMetallicRoughness;
-        if (!pbr.baseColorFactor.empty()) {
-            params.baseColorFactor =
-                glm::vec4(pbr.baseColorFactor[0], pbr.baseColorFactor[1],
-                          pbr.baseColorFactor[2], pbr.baseColorFactor[3]);
+        float color[4] = {1,1,1,1};
+        for (size_t i=0; i < pbr.baseColorFactor.size() && i < 4; ++i) color[i] = static_cast<float>(pbr.baseColorFactor[i]);
+        mat->setVector("baseColorFactor", color);
+        float emissive[4] = {};
+        for (size_t i=0; i < gltfMat.emissiveFactor.size() && i < 3; ++i) emissive[i] = static_cast<float>(gltfMat.emissiveFactor[i]);
+        mat->setVector("emissiveFactor", emissive);
+        mat->setFloat("metallicFactor", static_cast<float>(pbr.metallicFactor));
+        mat->setFloat("roughnessFactor", static_cast<float>(pbr.roughnessFactor));
+        mat->setFloat("normalScale", static_cast<float>(gltfMat.normalTexture.scale));
+        mat->setFloat("alphaCutoff", static_cast<float>(gltfMat.alphaCutoff));
+        if (gltfMat.alphaMode == "BLEND") {
+            std::cerr << "[GLTFLoader] BLEND material '" << gltfMat.name
+                      << "' is unsupported; rendering it as opaque.\n";
         }
-        params.metallicFactor = static_cast<float>(pbr.metallicFactor);
-        params.roughnessFactor = static_cast<float>(pbr.roughnessFactor);
-
-        if (!gltfMat.emissiveFactor.empty()) {
-            params.emissiveFactor =
-                glm::vec4(gltfMat.emissiveFactor[0],
-                          gltfMat.emissiveFactor[1],
-                          gltfMat.emissiveFactor[2], 1.0f);
-        }
-
-        if (gltfMat.normalTexture.index >= 0) {
-            params.normalScale =
-                static_cast<float>(gltfMat.normalTexture.scale);
-        }
-        if (gltfMat.occlusionTexture.index >= 0) {
-            // ORM 打包约定仅当 occlusion 与 MR 同图时成立（Blender 导出器行为）；
-            // 独立 occlusion 贴图暂不支持，按无 AO 处理并告警。
-            if (gltfMat.occlusionTexture.index ==
-                pbr.metallicRoughnessTexture.index) {
-                params.occlusionStrength =
-                    static_cast<float>(gltfMat.occlusionTexture.strength);
-            } else {
-                std::cout << "[GLTFLoader] material '" << gltfMat.name
-                          << "': separate occlusionTexture not supported, "
-                             "ignoring AO." << std::endl;
-                params.occlusionStrength = 0.0f;
-            }
-        } else {
-            // 无 occlusionTexture：MR 贴图 R 通道内容未定义，AO 必须为 1.0
-            params.occlusionStrength = 0.0f;
-        }
-
-        params.alphaCutoff = static_cast<float>(gltfMat.alphaCutoff);
-        if (gltfMat.alphaMode == "MASK") {
-            params.alphaMode = AlphaMode::Mask;
-        } else if (gltfMat.alphaMode == "BLEND") {
-            params.alphaMode = AlphaMode::Blend;
-        }
-        params.doubleSided = gltfMat.doubleSided ? 1u : 0u;
-
-        mat->setParams(params);
-
-        if (pbr.baseColorTexture.index >= 0) {
-            int imgIdx = model.textures[pbr.baseColorTexture.index].source;
-            mat->setBaseColor(textures[imgIdx]);
-        }
-        if (pbr.metallicRoughnessTexture.index >= 0) {
-            int imgIdx =
-                model.textures[pbr.metallicRoughnessTexture.index].source;
-            mat->setOrm(textures[imgIdx]);
-        }
-        if (gltfMat.normalTexture.index >= 0) {
-            int imgIdx = model.textures[gltfMat.normalTexture.index].source;
-            mat->setNormal(textures[imgIdx]);
-            ShaderParamSet sp;
-            sp.set("useNormalMap", true);
-            mat->setShaderParams(sp);
-        }
-        if (gltfMat.emissiveTexture.index >= 0) {
-            int imgIdx = model.textures[gltfMat.emissiveTexture.index].source;
-            mat->setEmissive(textures[imgIdx]);
-        }
-
-        mat->writeDescriptorSet();
+        const int alpha = gltfMat.alphaMode == "MASK" ? 1 : 0;
+        mat->setInt("alphaMode", alpha);
+        mat->setInt("doubleSided", gltfMat.doubleSided ? 1 : 0);
+        if (gltfMat.doubleSided) mat->cullOverride = VK_CULL_MODE_NONE;
+        mat->setFloat("occlusionStrength", gltfMat.occlusionTexture.index >= 0 ? static_cast<float>(gltfMat.occlusionTexture.strength) : 0.f);
+        auto bindTexture = [&](const char* name, int index) {
+            if (index < 0) return;
+            const int image = model.textures.at(index).source;
+            mat->setTexture(name, textures.at(image));
+        };
+        bindTexture("baseColorMap", pbr.baseColorTexture.index);
+        bindTexture("ormMap", pbr.metallicRoughnessTexture.index);
+        bindTexture("normalMap", gltfMat.normalTexture.index);
+        bindTexture("emissiveMap", gltfMat.emissiveTexture.index);
+        bindTexture("occlusionMap", gltfMat.occlusionTexture.index);
+        mat->setKeyword("useNormalMap", gltfMat.normalTexture.index >= 0);
+        mat->upload();
         materials.push_back(mat);
     }
 
@@ -355,6 +316,8 @@ void GLTFLoader::load(const std::string& directory, Scene* scene,
                         pm.materialIndex <
                             static_cast<int>(materials.size())) {
                         obj.material = materials[pm.materialIndex];
+                    } else {
+                        obj.material = scene->createMaterial(*shader);
                     }
                     scene->addRenderObject(obj);
                 }
@@ -443,7 +406,8 @@ void GLTFLoader::load(const std::string& directory, Scene* scene,
 std::unique_ptr<Scene> GLTFLoader::loadScene(
     const std::string& directory,
     VulkanContext* vkContext,
-    MaterialTemplate* materialTemplate) {
+    ShaderAsset* shader) {
+    if (!shader) throw std::runtime_error("glTF loader requires a prepared PBR ShaderAsset");
     auto scene = std::make_unique<Scene>();
 
     std::filesystem::path dirPath = directory;
@@ -457,7 +421,7 @@ std::unique_ptr<Scene> GLTFLoader::loadScene(
     load(dirPath.string(), scene.get(),
          vkContext->device, vkContext->physicalDevice,
          vkContext->commandPool, vkContext->graphicsQueue,
-         materialTemplate);
+         shader);
 
     if (!scene->getRenderObjects().empty() &&
         scene->getCamera().position == glm::vec3(0.0f, 0.0f, 3.0f)) {

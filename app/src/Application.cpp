@@ -1,32 +1,26 @@
 #include "app/Application.h"
 #include "app/ConfigLoader.h"
 #include "app/TrackballInteractor.h"
-#include "app/ImGuiPass.h"
 
-#include "engine/renderer/ForwardRenderer.h"
 #include "engine/renderer/deferred/DeferredRenderer.h"
 #include "engine/scene/GLTFLoader.h"
+#include "engine/scene/PrimitiveMeshFactory.h"
 
-#include "imgui.h"
-#include "backends/imgui_impl_glfw.h"
-#include "backends/imgui_impl_vulkan.h"
-
-#include <stdexcept>
 #include <iostream>
 #include <filesystem>
-#include <vector>
+#include <utility>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace app {
 
-void Application::run(const char* configPath) {
+Application::Application(ConfigLoader loader) : configLoader(std::move(loader)) {}
+
+void Application::run() {
     const int WIDTH = 800;
     const int HEIGHT = 600;
 
-    // 0. 加载配置（缺失时全默认，行为与硬编码一致）
-    config = ConfigLoader::load(configPath ? configPath : "configs/main.json");
-    activePipeline =
-        (config.section("renderer").getString("type", "deferred") == "forward") ? 0 : 1;
-
+    // 0. All application configuration is resolved from the configs directory.
+    config = ConfigLoader::load("main.json");
     // 1. Create window
     window.init(WIDTH, HEIGHT, "Vulkan + ImGui");
 
@@ -41,19 +35,17 @@ void Application::run(const char* configPath) {
     context.createDevice(window.getSurface());
 
     // 5. Initialize render module (swapchain / sync / global services)
-    std::vector<std::filesystem::path> userShaderDirs;
-    for (const auto& dir : config.getStringList("shaderDirs")) {
-        userShaderDirs.emplace_back(dir);
-    }
     renderModule.init(&context, window.getSurface(), [&]() {
         return window.getFramebufferSize();
-    }, userShaderDirs);
+    }, configLoader.customShaderSearchPaths());
+
+    configLoader.registerShaderAssets(renderModule.getShaderAssetManager());
 
     // 6. Create renderer, load scene, compile render graph
-    setPipeline(activePipeline);
+    rebuildRenderer();
 
     // 8. Initialize ImGui
-    initImGui();
+    imgui.init(window, context, renderModule);
 
     // 9. Setup trackball camera interactor
     TrackballInteractor trackball;
@@ -72,27 +64,18 @@ void Application::run(const char* configPath) {
             }
         }
 
-        ImGui_ImplVulkan_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
+        imgui.beginFrame();
 
         trackball.update();
 
-        renderImGui();
+        const auto actions = imgui.drawControls(scene.get(), config);
+        if (actions.rebuildRenderer) rebuildRenderer();
+        if (actions.quit) window.requestClose();
 
-        // B/C 类配置改动：帧末统一重建一次管线
-        if (pipelineRebuildRequested) {
-            pipelineRebuildRequested = false;
-            setPipeline(activePipeline);
-        }
+        imgui.endFrame();
 
-        ImGui::Render();
-
-        auto guiRender = [](VkCommandBuffer commandBuffer) {
-            ImDrawData* drawData = ImGui::GetDrawData();
-            if (drawData) {
-                ImGui_ImplVulkan_RenderDrawData(drawData, commandBuffer);
-            }
+        auto guiRender = [this](VkCommandBuffer commandBuffer) {
+            imgui.recordDrawCommands(commandBuffer);
         };
 
         if (!renderModule.drawFrame(guiRender)) {
@@ -105,7 +88,7 @@ void Application::run(const char* configPath) {
 
     vkDeviceWaitIdle(context.device);
 
-    cleanupImGui();
+    imgui.cleanup(context);
     // Scene must be cleaned up before RenderModule (and VMA) because meshes/
     // materials hold VMA allocations.
     if (scene) {
@@ -118,41 +101,29 @@ void Application::run(const char* configPath) {
     window.cleanup();
 }
 
-void Application::setPipeline(int type) {
-    activePipeline = type;
-
+void Application::rebuildRenderer() {
     const engine::Config& rendererCfg = config.section("renderer");
-    const engine::Config& materialCfg = config.section("material");
-    // IBL 环境目录（仅 deferred 接入；ibl.enabled=false 时视同无路径）
+    // ibl.enabled=false 时视同无 IBL 路径。
     const std::string iblPath =
         config.getBool("ibl.enabled", true) ? config.getString("ibl.path", "") : "";
 
-    // 1. Create and init renderer, then add custom passes
-    std::unique_ptr<engine::IRenderer> renderer;
-    engine::MaterialTemplate* matTemplate = nullptr;
-    if (type == 1) {
-        auto r = std::make_unique<engine::DeferredRenderer>(rendererCfg, materialCfg,
-                                                            iblPath);
-        r->init(renderModule.createFrameContext());
-        r->addPass(std::make_unique<app::ImGuiPass>());
-        matTemplate = r->getDefaultMaterialTemplate();
-        renderer = std::move(r);
-    } else {
-        auto r = std::make_unique<engine::ForwardRenderer>(rendererCfg, materialCfg);
-        r->init(renderModule.createFrameContext());
-        r->addPass(std::make_unique<app::ImGuiPass>());
-        matTemplate = r->getDefaultMaterialTemplate();
-        renderer = std::move(r);
-    }
+    auto renderer = std::make_unique<engine::DeferredRenderer>(rendererCfg, iblPath);
+    renderer->init(renderModule.createFrameContext());
+    renderer->addPass(imgui.createRenderPass());
 
-    // 2. 材质实例绑定在材质模板上：旧场景引用旧渲染器的模板，
-    //    必须先于 setRenderer（其内部销毁旧模板）清理，再用新模板重载场景
-    if (scene) {
-        scene->cleanup(context.device);
-        scene.reset();
+    // Materials belong to the scene; changing renderer does not recreate them.
+    if (!scene) {
+        scene = engine::GLTFLoader::loadScene(config.getString("scene", "scenes/desktop"), &context,
+            renderModule.getShaderAssetManager().find("Builtin/PBR"));
+        if (auto* shader = renderModule.getShaderAssetManager().find("Example/AnimatedColor")) {
+            engine::RenderObject cube;
+            cube.mesh = engine::PrimitiveMeshFactory::createCube(*scene, context);
+            cube.material = scene->createMaterial(*shader);
+            cube.transform = glm::translate(glm::mat4(1), glm::vec3(0, 1.0f, 0))
+                           * glm::scale(glm::mat4(1), glm::vec3(0.75f));
+            scene->addRenderObject(cube);
+        }
     }
-    scene = engine::GLTFLoader::loadScene(
-        config.getString("scene", "scenes/desktop"), &context, matTemplate);
 
     // 单平行光测试：覆盖场景光源为一盏平行光（测完删除本段，恢复场景原始光源）
     // glTF 不携带阴影标记（KHR_lights_punctual 无此字段），由 app 决定哪些光投影
@@ -170,147 +141,6 @@ void Application::setPipeline(int type) {
     renderModule.setRenderer(std::move(renderer));
     renderModule.buildGraph();
     renderModule.setScene(scene.get());
-}
-
-void Application::initImGui() {
-    // Create ImGui context
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-    // Style
-    ImGui::StyleColorsDark();
-
-    // Initialize GLFW backend
-    ImGui_ImplGlfw_InitForVulkan(window.getHandle(), true);
-
-    // Create descriptor pool for ImGui
-    VkDescriptorPoolSize poolSizes[] = {
-        { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
-        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
-    };
-
-    VkDescriptorPoolCreateInfo poolInfo = {};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 1000 * 11;  // IM_ARRAYSIZE(poolSizes) = 11
-    poolInfo.poolSizeCount = 11;
-    poolInfo.pPoolSizes = poolSizes;
-
-    if (vkCreateDescriptorPool(context.device, &poolInfo, nullptr, &imguiDescriptorPool) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create ImGui descriptor pool!");
-    }
-
-    // Initialize Vulkan backend (Dynamic Rendering)
-    ImGui_ImplVulkan_InitInfo initInfo = {};
-    initInfo.ApiVersion = VK_API_VERSION_1_3;
-    initInfo.Instance = context.instance;
-    initInfo.PhysicalDevice = context.physicalDevice;
-    initInfo.Device = context.device;
-    initInfo.QueueFamily = context.graphicsFamily;
-    initInfo.Queue = context.graphicsQueue;
-    initInfo.PipelineCache = VK_NULL_HANDLE;
-    initInfo.DescriptorPool = imguiDescriptorPool;
-    initInfo.MinImageCount = 2;
-    initInfo.ImageCount = renderModule.getImageCount();
-    initInfo.UseDynamicRendering = true;
-
-    VkFormat colorFormat = renderModule.getSwapChainFormat();
-    VkPipelineRenderingCreateInfo renderingInfo{};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &colorFormat;
-    renderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-
-    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = renderingInfo;
-    initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-
-    ImGui_ImplVulkan_Init(&initInfo);
-}
-
-void Application::cleanupImGui() {
-    ImGui_ImplVulkan_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-
-    if (imguiDescriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(context.device, imguiDescriptorPool, nullptr);
-        imguiDescriptorPool = VK_NULL_HANDLE;
-    }
-}
-
-void Application::renderImGui() {
-    // Simple demo UI
-    ImGui::Begin("Vulkan Renderer");
-    ImGui::Text("Hello from ImGui!");
-    ImGui::Separator();
-    ImGui::Text("This is a simple GUI overlay");
-    ImGui::Text("on top of the Vulkan scene.");
-    ImGui::End();
-
-    // Another window with controls
-    ImGui::Begin("Controls");
-    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
-        1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-    int pipeline = activePipeline;
-    if (ImGui::Combo("Pipeline", &pipeline, "Forward\0Deferred\0")) {
-        setPipeline(pipeline);
-    }
-    if (scene) {
-        // EV100 曝光：0 = 不缩放，-1 = 亮度减半，+1 = 翻倍
-        ImGui::SliderFloat("Exposure (EV)", &scene->getCamera().exposureEV,
-                           -15.0f, 5.0f);
-
-        // A 类：阴影开关 —— 即时生效（castsShadows 是每帧数据，下一帧生效）
-        bool shadowOn = config.section("renderer").getBool("shadow.enabled", false);
-        if (ImGui::Checkbox("Shadows", &shadowOn)) {
-            config.set("renderer.shadow.enabled", shadowOn);
-            for (auto& l : scene->getLights()) {
-                l.castsShadows = shadowOn;
-            }
-        }
-
-        // B 类：雾效 —— shader 变体需重编译，经帧末管线重建生效
-        if (activePipeline == 0) {
-            bool fog = config.section("renderer").getBool("passParams.useFog", false);
-            if (ImGui::Checkbox("Fog", &fog)) {
-                config.set("renderer.passParams.useFog", fog);
-                pipelineRebuildRequested = true;
-            }
-        }
-
-        // B 类：IBL 开关 —— 经帧末管线重建生效（仅 deferred 且配置了环境目录时显示）
-        if (activePipeline == 1 && !config.getString("ibl.path", "").empty()) {
-            bool ibl = config.getBool("ibl.enabled", true);
-            if (ImGui::Checkbox("IBL", &ibl)) {
-                config.set("ibl.enabled", ibl);
-                pipelineRebuildRequested = true;
-            }
-        }
-
-        // B 类：Tonemap 开关 —— 两条管线通用，经帧末管线重建生效
-        {
-            bool tonemap = config.section("renderer").getBool("tonemap", true);
-            if (ImGui::Checkbox("Tonemap", &tonemap)) {
-                config.set("renderer.tonemap", tonemap);
-                pipelineRebuildRequested = true;
-            }
-        }
-    }
-    if (ImGui::Button("Quit")) {
-        glfwSetWindowShouldClose(window.getHandle(), GLFW_TRUE);
-    }
-    ImGui::End();
 }
 
 } // namespace app

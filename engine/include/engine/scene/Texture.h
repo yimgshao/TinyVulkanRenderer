@@ -31,11 +31,18 @@
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 #include <string>
+#include <span>
 
 namespace engine {
 
 class Texture {
 public:
+    // RGBA8, tightly packed. Cube data contains six square faces in Vulkan order.
+    void createRgba8(VkImageViewType type, VkExtent3D extent, std::span<const uint8_t> pixels,
+                     VkDevice device, VkPhysicalDevice physicalDevice, VkCommandPool pool, VkQueue queue);
+    VkImageViewType viewType() const { return viewType_; }
+    void createSolid(uint32_t rgba, VkDevice device, VkPhysicalDevice physicalDevice,
+                     VkCommandPool pool, VkQueue queue);
     void load(const std::string& filepath, VkDevice device,
               VkPhysicalDevice physicalDevice, VkCommandPool commandPool,
               VkQueue graphicsQueue,
@@ -47,6 +54,7 @@ public:
     VkDescriptorImageInfo descriptorInfo() const;
 
 private:
+    VkImageViewType viewType_ = VK_IMAGE_VIEW_TYPE_2D;
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkImage textureImage = VK_NULL_HANDLE;

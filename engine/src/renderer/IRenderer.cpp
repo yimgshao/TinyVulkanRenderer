@@ -30,6 +30,7 @@ void IRenderer::writeFrameUBO(void* dst, const FrameContext& ctx) {
 
     ubo.cameraPos = glm::vec4(cam.position, 1.0f);
     ubo.exposureEV = cam.exposureEV;
+    ubo.timeSeconds = ctx.timeSeconds;
 
     const auto& lights = ctx.scene->getLights();
     ubo.lightCount = static_cast<uint32_t>(

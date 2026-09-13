@@ -2,7 +2,7 @@
 
 #include "engine/scene/Camera.h"
 #include "engine/scene/Light.h"
-#include "engine/scene/MaterialInstance.h"
+#include "engine/scene/Material.h"
 #include "engine/scene/Mesh.h"
 #include "engine/scene/RenderObject.h"
 #include "engine/scene/Texture.h"
@@ -13,7 +13,6 @@
 
 namespace engine {
 
-class MaterialTemplate;
 
 /**
  * Scene container managing meshes, material instances, textures, lights, camera,
@@ -21,8 +20,7 @@ class MaterialTemplate;
  *
  * 所有权约定：
  *   - Scene 拥有 mesh / material instance / texture（unique_ptr）
- *   - **Scene 不拥有 MaterialTemplate**：template 由具体 IRenderer 拥有，
- *     scene 里的 MaterialInstance 只持有 raw 指针引用它
+ *   - ShaderAsset is owned by RenderModule; materials hold non-owning references.
  *   - RenderObject 持有 mesh + material instance 的 raw 指针
  *
  * 清理顺序：render objects -> material instances -> meshes -> textures。
@@ -30,7 +28,7 @@ class MaterialTemplate;
 class Scene {
 public:
     Mesh* createMesh();
-    MaterialInstance* createMaterialInstance(MaterialTemplate* tmpl);
+    Material* createMaterial(ShaderAsset& shader);
     Texture* createTexture();
 
     void addRenderObject(const RenderObject& obj);
@@ -50,7 +48,7 @@ public:
 
 private:
     std::vector<std::unique_ptr<Mesh>>             meshes;
-    std::vector<std::unique_ptr<MaterialInstance>> materialInstances;
+    std::vector<std::unique_ptr<Material>> materials;
     std::vector<std::unique_ptr<Texture>>          textures;
 
     std::vector<RenderObject> renderObjects;

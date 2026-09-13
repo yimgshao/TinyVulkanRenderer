@@ -18,6 +18,7 @@ public:
     std::vector<const char*> getRequiredInstanceExtensions() const;
 
     bool shouldClose() const;
+    void requestClose() const;
     void pollEvents() const;
     void waitEvents() const;
     std::pair<int, int> getFramebufferSize() const;

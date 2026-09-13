@@ -12,7 +12,7 @@ namespace engine {
 /**
  * 全局每帧 UBO。
  *
- * 内存布局必须与 scene_forward.hlsl 中的 PerFrameData 完全对齐（std140 兼容）。
+ * 内存布局必须与 common/types.hlsl 中的 PerFrameData 完全对齐（std140 兼容）。
  * 任何字段调整都需同步：
  *   1) 此结构体定义
  *   2) HLSL `PerFrameData`（common/types.hlsl）
@@ -31,6 +31,8 @@ struct alignas(16) FrameUBO {
     alignas(16) glm::vec4 cameraPos;
     uint32_t              lightCount;
     float                 exposureEV = 0.0f;  // EV100 曝光（log2 刻度）
+    float                 timeSeconds = 0.0f;
+    float                 _framePadding = 0.0f;
     GPULight              lights[MAX_LIGHTS];
 };
 

@@ -33,7 +33,6 @@ struct GraphicsPSODesc {
     ShaderVariantKey   variantKey;
     ShaderParamSet     materialParams;
     ShaderParamSet     passParams;
-    std::string        materialHeader;   // 可为空 → 非材质 pass 独立编译
 
     // ---- 顶点输入 ----
     /// VertexLayoutRegistry 中的布局名；空字符串 = 无顶点输入（全屏 pass）。
@@ -59,7 +58,8 @@ struct GraphicsPSOKey {
     std::string           passName;
     std::string           moduleName;
     std::string           vertexLayout;
-    std::string           materialType;
+    VkPipelineLayout      layout = VK_NULL_HANDLE;
+    std::string           compilationSignature;
     uint64_t              materialParamHash = 0;
     uint64_t              passParamHash     = 0;
     PipelineStateDesc     state;
@@ -69,7 +69,7 @@ struct GraphicsPSOKey {
     VkFormat              colorFormats[kMaxColorAttachments] = {};
 
     bool operator==(const GraphicsPSOKey& o) const noexcept {
-        if (materialType      != o.materialType)      return false;
+        if (layout != o.layout || compilationSignature != o.compilationSignature) return false;
         if (materialParamHash != o.materialParamHash) return false;
         if (passParamHash     != o.passParamHash)     return false;
         if (!(state == o.state)) return false;
@@ -92,9 +92,10 @@ struct GraphicsPSOKeyHash {
             h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         };
         size_t h = std::hash<std::string>{}(k.passName);
+        mix(h, std::hash<VkPipelineLayout>{}(k.layout));
+        mix(h, std::hash<std::string>{}(k.compilationSignature));
         mix(h, std::hash<std::string>{}(k.moduleName));
         mix(h, std::hash<std::string>{}(k.vertexLayout));
-        mix(h, std::hash<std::string>{}(k.materialType));
         // 整数字段直接取值混合（主流实现的整数 hash 即恒等）
         mix(h, static_cast<size_t>(k.materialParamHash));
         mix(h, static_cast<size_t>(k.passParamHash));

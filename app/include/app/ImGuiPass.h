@@ -12,8 +12,7 @@ public:
 
     void Setup(engine::RenderGraphBuilder& builder,
                const engine::RenderGraphBuildContext& ctx) override;
-    void Execute(VkCommandBuffer cmd, const engine::FrameContext& frame,
-                 const engine::RGResources& resources) override;
+    void Execute(engine::RenderPassContext& context) override;
 };
 
 } // namespace app

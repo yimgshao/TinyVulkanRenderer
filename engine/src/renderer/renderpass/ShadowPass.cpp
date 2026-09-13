@@ -9,31 +9,22 @@ namespace engine {
 // ShadowPass
 // =============================================================================
 
-ShadowPass::ShadowPass() {
-    passName = "Shadow";
+ShadowPass::ShadowPass(bool pointAtlas) : pointAtlas_(pointAtlas) {
+    passName = pointAtlas ? "ShadowPoint" : "Shadow";
 }
 
 void ShadowPass::Setup(RenderGraphBuilder& builder,
                        const RenderGraphBuildContext& /*ctx*/) {
-    ShaderModuleConfig shader{};
-    shader.moduleName = "common/shadow_depth";
-    shader.stages     = {ShaderStage::Vertex};
-    builder.SetShader(shader);
-    builder.SetVertexLayout("StaticMesh");
-    builder.SetPipelineLayout(pipelineLayout);
-    PipelineStateDesc state = PipelineStateDesc::Default();
-    state.depthBiasEnable = VK_TRUE;
-    builder.SetPipelineState(state);
-
     uint32_t dirLayers = maxDirectionalLights;
     uint32_t ptLayers  = maxPointLights * 6;
 
-    if (dirLayers > 0) {
+    if (!pointAtlas_) {
         RGTextureDesc desc{};
         desc.width       = directionalRes;
         desc.height      = directionalRes;
-        desc.arrayLayers = dirLayers;
+        desc.arrayLayers = std::max(1u, dirLayers);
         desc.format      = depthFormat;
+        desc.viewType    = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         desc.usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                          | VK_IMAGE_USAGE_SAMPLED_BIT;
         hDirAtlas = builder.CreateTexture("ShadowAtlas_Directional", desc);
@@ -42,12 +33,13 @@ void ShadowPass::Setup(RenderGraphBuilder& builder,
                                         {{{1.0f, 0.0f}}}});
     }
 
-    if (ptLayers > 0) {
+    if (pointAtlas_) {
         RGTextureDesc desc{};
         desc.width       = pointRes;
         desc.height      = pointRes;
-        desc.arrayLayers = ptLayers;
+        desc.arrayLayers = std::max(1u, ptLayers);
         desc.format      = depthFormat;
+        desc.viewType    = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         desc.usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                          | VK_IMAGE_USAGE_SAMPLED_BIT;
         hPointAtlas = builder.CreateTexture("ShadowAtlas_Point", desc);
@@ -57,72 +49,56 @@ void ShadowPass::Setup(RenderGraphBuilder& builder,
     }
 }
 
-void ShadowPass::Execute(VkCommandBuffer cmd, const FrameContext& frame,
-                         const RGResources& resources) {
-    (void)resources;  // 本 pass 不采样 graph 纹理
+void ShadowPass::Execute(RenderPassContext& context) {
+    const auto& frame = context.GetFrame();
     Scene* scene = frame.scene;
-    if (!scene || GetPipelineLayout() == VK_NULL_HANDLE) return;
+    if (!scene) return;
 
     const auto& lights = scene->getLights();
 
     int32_t dirLayer = 0, ptLayer = 0;
 
     for (const auto& light : lights) {
-        if (!light.castsShadows) continue;
+        if (!light.castsShadows || (light.type == LightType::Point) != pointAtlas_) continue;
 
         if (light.type == LightType::Point) {
+            if (ptLayer + 6 > static_cast<int32_t>(maxPointLights * 6)) continue;
             auto viewProjs = computePointCubeViewProjs(light);
             for (uint32_t face = 0; face < 6; ++face) {
-                drawSceneDepth(cmd, frame, viewProjs[face],
+                drawSceneDepth(context, viewProjs[face],
                                pointRes, ptLayer + static_cast<int32_t>(face));
             }
             ptLayer += 6;
         } else {
+            if (dirLayer >= static_cast<int32_t>(maxDirectionalLights)) continue;
             glm::mat4 viewProj = (light.type == LightType::Directional)
                 ? computeDirectionalViewProj(light, scene)
                 : computeSpotViewProj(light);
-            drawSceneDepth(cmd, frame, viewProj,
+            drawSceneDepth(context, viewProj,
                            directionalRes, dirLayer);
             ++dirLayer;
         }
     }
 }
 
-void ShadowPass::drawSceneDepth(VkCommandBuffer cmd, const FrameContext& frame,
-                                 const glm::mat4& lightViewProj,
+void ShadowPass::drawSceneDepth(RenderPassContext& context, const glm::mat4& lightViewProj,
                                  uint32_t resolution, int32_t layerIndex) {
-    Scene* scene = frame.scene;
-    if (!scene) return;
-
     VkViewport vp{0.0f, 0.0f, static_cast<float>(resolution),
                   static_cast<float>(resolution), 0.0f, 1.0f};
-    vkCmdSetViewport(cmd, 0, 1, &vp);
+    context.SetViewport(vp);
 
     VkRect2D scissor{{0, 0}, {resolution, resolution}};
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    context.SetScissor(scissor);
 
-    vkCmdSetDepthBias(cmd, 1.5f, 0.0f, 0.5f);
+    context.SetDepthBias(1.5f, 0.0f, 0.5f);
 
-    for (const auto& obj : scene->getRenderObjects()) {
-        if (!obj.mesh) continue;
-
-        struct {
-            glm::mat4 mvp;
-            int32_t   layerIndex;
-            int32_t   _pad[3];
-        } pc;
-        pc.mvp        = lightViewProj * obj.transform;
-        pc.layerIndex = layerIndex;
-        pc._pad[0]    = 0;
-        pc._pad[1]    = 0;
-        pc._pad[2]    = 0;
-
-        vkCmdPushConstants(cmd, GetPipelineLayout(),
-                           VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
-
-        obj.mesh->bind(cmd);
-        obj.mesh->drawIndexed(cmd);
-    }
+    struct alignas(16) ShadowPassData {
+        glm::mat4 lightViewProj;
+        int32_t layer;
+        int32_t padding[3];
+    } passData{lightViewProj, layerIndex, {0, 0, 0}};
+    context.SetPassData(passData);
+    context.DrawScene("ShadowCaster");
 }
 
 } // namespace engine

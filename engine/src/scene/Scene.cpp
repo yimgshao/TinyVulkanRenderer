@@ -1,7 +1,14 @@
 #include "engine/scene/Scene.h"
-#include "engine/scene/MaterialTemplate.h"
 
 namespace engine {
+
+Material* Scene::createMaterial(ShaderAsset& shader) {
+    auto material = std::make_unique<Material>();
+    material->init(shader);
+    auto* result = material.get();
+    materials.push_back(std::move(material));
+    return result;
+}
 
 Mesh* Scene::createMesh() {
     auto m = std::make_unique<Mesh>();
@@ -10,13 +17,6 @@ Mesh* Scene::createMesh() {
     return ptr;
 }
 
-MaterialInstance* Scene::createMaterialInstance(MaterialTemplate* tmpl) {
-    auto m = std::make_unique<MaterialInstance>();
-    MaterialInstance* ptr = m.get();
-    m->init(tmpl);
-    materialInstances.push_back(std::move(m));
-    return ptr;
-}
 
 Texture* Scene::createTexture() {
     auto t = std::make_unique<Texture>();
@@ -39,15 +39,12 @@ void Scene::setCamera(const Camera& cam) {
 
 void Scene::cleanup(VkDevice device) {
     renderObjects.clear();
+    for (auto& material : materials) material->cleanup();
+    materials.clear();
     lights.clear();
 
-    for (auto& m : materialInstances) {
-        if (m) m->cleanup(device);
-    }
-    materialInstances.clear();
 
-    // MaterialTemplate 由具体 pipeline (e.g. ForwardRenderer) 拥有，
-    // 此处不参与清理。
+    // ShaderAsset lifetime is managed by RenderModule, not Scene.
 
     for (auto& m : meshes) {
         if (m) m->cleanup(device);
