@@ -39,7 +39,7 @@ struct PerFrameData
     uint     lightCount;
     float    exposureEV;   // EV100 曝光，输出前 result *= exp2(exposureEV)
     float    timeSeconds;  // Seconds elapsed since RenderModule initialization.
-    float    _framePadding;
+    int      shadowPcfRadius; // PCF radius in shadow-map texels.
     GPULight lights[8];
 };
 

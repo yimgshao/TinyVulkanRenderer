@@ -42,6 +42,7 @@ public:
     const char* getPipelineName() const override { return "Deferred"; }
     void buildRenderGraph(RenderGraph& rg,
                           const RenderGraphBuildContext& ctx) override;
+    void writeFrameUBO(void* dst, const FrameContext& ctx) override;
 
 
     /// 按名字和类型获取 pass（用于运行时修改参数）。
@@ -81,6 +82,7 @@ private:
     void createDefaultPasses(const FrameContext& ctx);
 
     Config rendererCfg_;
+    int32_t shadowPcfRadius_ = 1;
 
     DescriptorSetManager* descManager     = nullptr;
     ShaderVariantManager* variantManager  = nullptr;

@@ -133,7 +133,7 @@ SceneRenderer::PreparedPass& SceneRenderer::getOrPrepare(
                     {"lightCount", offsetof(FrameUBO, lightCount)},
                     {"exposureEV", offsetof(FrameUBO, exposureEV)},
                     {"timeSeconds", offsetof(FrameUBO, timeSeconds)},
-                    {"_framePadding", offsetof(FrameUBO, _framePadding)},
+                    {"shadowPcfRadius", offsetof(FrameUBO, shadowPcfRadius)},
                     {"lights", offsetof(FrameUBO, lights)}};
                 for (const auto& member : frame->bindings.front().members)
                     if (!offsets.contains(member.name) || offsets.at(member.name) != member.offset)

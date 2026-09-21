@@ -149,7 +149,7 @@ void Application::rebuildRenderer() {
     engine::Light sun{};
     sun.type         = engine::LightType::Directional;
     sun.color        = glm::vec3(1.0f, 0.98f, 0.95f);
-    sun.intensity    = 10.0f;
+    sun.intensity    = 20.0f;
     sun.direction    = glm::normalize(glm::vec3(-1.0f, -2.0f, -1.0f));
     sun.castsShadows = rendererCfg.getBool("shadow.enabled", false);
     sceneLights.push_back(sun);

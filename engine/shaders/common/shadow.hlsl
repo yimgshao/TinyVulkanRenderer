@@ -19,6 +19,36 @@
 // Directional / Spot light shadow
 // =============================================================================
 
+float sampleShadowDirectionalPCF(float2 uv, int layer, float refDepth)
+{
+    int radius = gFrameData.shadowPcfRadius;
+    if (radius <= 0)
+    {
+        return ShadowAtlas_Directional.SampleCmpLevelZero(
+            gShadowSampler, float3(uv, float(layer)), refDepth);
+    }
+
+    uint width, height, layerCount;
+    ShadowAtlas_Directional.GetDimensions(width, height, layerCount);
+    float2 texelSize = 1.0 / float2(width, height);
+
+    float visibility = 0.0;
+    int sampleCount = 0;
+    [loop]
+    for (int y = -radius; y <= radius; ++y)
+    {
+        [loop]
+        for (int x = -radius; x <= radius; ++x)
+        {
+            float2 sampleUV = uv + float2(x, y) * texelSize;
+            visibility += ShadowAtlas_Directional.SampleCmpLevelZero(
+                gShadowSampler, float3(sampleUV, float(layer)), refDepth);
+            ++sampleCount;
+        }
+    }
+    return visibility / float(sampleCount);
+}
+
 float calcShadowDirectional(float3 worldPos, GPULight light)
 {
     if (light.shadowBaseLayer < 0) return 1.0;
@@ -32,14 +62,43 @@ float calcShadowDirectional(float3 worldPos, GPULight light)
 
     if (any(uv < 0.0) || any(uv > 1.0)) return 1.0;
 
-    return ShadowAtlas_Directional.SampleCmp(gShadowSampler,
-        float3(uv, float(light.shadowBaseLayer)),
-        refDepth - light.shadowBias);
+    return sampleShadowDirectionalPCF(
+        uv, light.shadowBaseLayer, refDepth - light.shadowBias);
 }
 
 // =============================================================================
 // Point light shadow (cubemap 6-face mapping)
 // =============================================================================
+
+float sampleShadowPointPCF(float2 uv, int layer, float refDepth)
+{
+    int radius = gFrameData.shadowPcfRadius;
+    if (radius <= 0)
+    {
+        return ShadowAtlas_Point.SampleCmpLevelZero(
+            gShadowSampler, float3(uv, float(layer)), refDepth);
+    }
+
+    uint width, height, layerCount;
+    ShadowAtlas_Point.GetDimensions(width, height, layerCount);
+    float2 texelSize = 1.0 / float2(width, height);
+
+    float visibility = 0.0;
+    int sampleCount = 0;
+    [loop]
+    for (int y = -radius; y <= radius; ++y)
+    {
+        [loop]
+        for (int x = -radius; x <= radius; ++x)
+        {
+            float2 sampleUV = uv + float2(x, y) * texelSize;
+            visibility += ShadowAtlas_Point.SampleCmpLevelZero(
+                gShadowSampler, float3(sampleUV, float(layer)), refDepth);
+            ++sampleCount;
+        }
+    }
+    return visibility / float(sampleCount);
+}
 
 float calcShadowPoint(float3 worldPos, GPULight light)
 {
@@ -81,9 +140,8 @@ float calcShadowPoint(float3 worldPos, GPULight light)
     float refDepth = ndcZ * 0.5 + 0.5;
 
     int layer = light.shadowBaseLayer + face;
-    return ShadowAtlas_Point.SampleCmp(gShadowSampler,
-        float3(uv, float(layer)),
-        refDepth - light.shadowBias);
+    return sampleShadowPointPCF(
+        uv, layer, refDepth - light.shadowBias);
 }
 
 // =============================================================================

@@ -95,6 +95,7 @@ void DeferredRenderer::init(const FrameContext& ctx) {
     descManager    = ctx.descManager;
     variantManager = ctx.variantManager;
     frameSetLayout = ctx.frameSetLayout;
+    shadowPcfRadius_ = rendererCfg_.getInt("shadow.pcfRadius", 1);
 
 
     // IBL 资源（set 3 的 layout 要先于 setupLightingResources 的 pipeline
@@ -113,6 +114,13 @@ void DeferredRenderer::init(const FrameContext& ctx) {
     setupIBLResources(device, descManager, iblTextures_, iblRes_);
 
     createDefaultPasses(ctx);
+}
+
+void DeferredRenderer::writeFrameUBO(void* dst, const FrameContext& ctx) {
+    if (!dst || !ctx.scene) return;
+
+    IRenderer::writeFrameUBO(dst, ctx);
+    static_cast<FrameUBO*>(dst)->shadowPcfRadius = shadowPcfRadius_;
 }
 
 void DeferredRenderer::cleanup() {

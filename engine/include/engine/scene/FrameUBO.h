@@ -32,7 +32,7 @@ struct alignas(16) FrameUBO {
     uint32_t              lightCount;
     float                 exposureEV = 0.0f;  // EV100 曝光（log2 刻度）
     float                 timeSeconds = 0.0f;
-    float                 _framePadding = 0.0f;
+    int32_t               shadowPcfRadius = 1; // PCF 半径，单位为 shadow-map texel
     GPULight              lights[MAX_LIGHTS];
 };
 
