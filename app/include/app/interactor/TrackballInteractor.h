@@ -1,20 +1,19 @@
 #pragma once
 
-#include "engine/scene/Camera.h"
+#include "app/interactor/IInteractor.h"
 
-#include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 namespace app {
 
-class TrackballInteractor {
+class TrackballInteractor final : public IInteractor {
 public:
-    void attach(GLFWwindow* window, engine::Camera* camera);
-    void detach();
+    void attach(GLFWwindow* window, engine::Camera* camera) override;
+    void detach() override;
 
     /// Call each frame after pollEvents() and before rendering.
-    void update();
+    void update(float deltaTime) override;
 
     void setTarget(const glm::vec3& target);
     void setDistance(float distance);

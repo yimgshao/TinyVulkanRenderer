@@ -19,6 +19,7 @@ namespace app {
  * 入口 main.json 语义：
  *   - "renderer"：值为 ".json" 结尾 → 相对入口文件目录加载子配置，
  *     挂为同名 section
+ *   - "interactor"：相机交互器类型（"trackball" 或 "first_person"）
  *   - "scene"：字符串值相对入口文件目录转绝对路径
  *   - "ibl.path"：IBL 环境目录，相对入口文件目录转绝对路径；
  *     "ibl.enabled"：是否启用 IBL

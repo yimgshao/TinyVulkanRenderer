@@ -1,4 +1,4 @@
-#include "app/TrackballInteractor.h"
+#include "app/interactor/TrackballInteractor.h"
 
 #include "imgui.h"
 
@@ -88,7 +88,7 @@ void TrackballInteractor::updateCamera() {
 // update
 // =============================================================================
 
-void TrackballInteractor::update() {
+void TrackballInteractor::update(float /*deltaTime*/) {
     if (!window_ || !camera_) return;
 
     // Don't interfere with ImGui

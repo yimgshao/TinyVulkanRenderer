@@ -1,6 +1,8 @@
 #include "app/Application.h"
 #include "app/ConfigLoader.h"
-#include "app/TrackballInteractor.h"
+#include "app/interactor/FirstPersonInteractor.h"
+#include "app/interactor/IInteractor.h"
+#include "app/interactor/TrackballInteractor.h"
 
 #include "engine/renderer/deferred/DeferredRenderer.h"
 #include "engine/scene/GLTFLoader.h"
@@ -8,8 +10,10 @@
 
 #include <iostream>
 #include <filesystem>
+#include <memory>
 #include <utility>
 #include <glm/gtc/matrix_transform.hpp>
+#include "imgui.h"
 
 namespace app {
 
@@ -47,10 +51,22 @@ void Application::run() {
     // 8. Initialize ImGui
     imgui.init(window, context, renderModule);
 
-    // 9. Setup trackball camera interactor
-    TrackballInteractor trackball;
-    trackball.attach(window.getHandle(), &scene->getCamera());
-    trackball.setDistance(4.0f);
+    // 9. Setup the configured camera interactor.
+    std::unique_ptr<IInteractor> interactor;
+    const std::string interactorType = config.getString("interactor", "trackball");
+    if (interactorType == "first_person") {
+        interactor = std::make_unique<FirstPersonInteractor>();
+        interactor->attach(window.getHandle(), &scene->getCamera());
+    } else {
+        if (interactorType != "trackball") {
+            std::cerr << "[Config] unknown interactor '" << interactorType
+                      << "', falling back to 'trackball'.\n";
+        }
+        auto trackball = std::make_unique<TrackballInteractor>();
+        trackball->attach(window.getHandle(), &scene->getCamera());
+        trackball->setDistance(4.0f);
+        interactor = std::move(trackball);
+    }
 
     // 10. Main loop
     while (!window.shouldClose()) {
@@ -66,7 +82,7 @@ void Application::run() {
 
         imgui.beginFrame();
 
-        trackball.update();
+        interactor->update(ImGui::GetIO().DeltaTime);
 
         const auto actions = imgui.drawControls(scene.get(), config);
         if (actions.rebuildRenderer) rebuildRenderer();
@@ -86,6 +102,7 @@ void Application::run() {
         }
     }
 
+    interactor->detach();
     vkDeviceWaitIdle(context.device);
 
     imgui.cleanup(context);
