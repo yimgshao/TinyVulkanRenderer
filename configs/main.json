@@ -1,9 +1,9 @@
 {
     "renderer": "./renderer/deferred.json",
     "interactor": "first_person",
-    "scene": "../scenes/desktop/gltf.gltf",
+    "scene": "../scenes/test_scene/gltf.gltf",
     "ibl": {
-        "path": "../scenes/IBL/courtyard",
+        "path": "../scenes/IBL/forest",
         "enabled": true
     }
 }

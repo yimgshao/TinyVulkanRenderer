@@ -133,23 +133,23 @@ void Application::rebuildRenderer() {
         scene = engine::GLTFLoader::loadScene(config.getString("scene", "scenes/desktop"), &context,
             renderModule.getShaderAssetManager().find("Builtin/PBR"));
         if (auto* shader = renderModule.getShaderAssetManager().find("Example/AnimatedColor")) {
+            // Default custom shader test cube
             engine::RenderObject cube;
             cube.mesh = engine::PrimitiveMeshFactory::createCube(*scene, context);
             cube.material = scene->createMaterial(*shader);
-            cube.transform = glm::translate(glm::mat4(1), glm::vec3(0, 1.0f, 0))
-                           * glm::scale(glm::mat4(1), glm::vec3(0.75f));
+            cube.transform = glm::translate(glm::mat4(1), glm::vec3(-1.0f, 0.5f, -1.0f))
+                           * glm::scale(glm::mat4(1), glm::vec3(0.5f));
             scene->addRenderObject(cube);
         }
     }
 
-    // 单平行光测试：覆盖场景光源为一盏平行光（测完删除本段，恢复场景原始光源）
-    // glTF 不携带阴影标记（KHR_lights_punctual 无此字段），由 app 决定哪些光投影
+    // Default light
     auto& sceneLights = scene->getLights();
     sceneLights.clear();
     engine::Light sun{};
     sun.type         = engine::LightType::Directional;
     sun.color        = glm::vec3(1.0f, 0.98f, 0.95f);
-    sun.intensity    = 2.0f;
+    sun.intensity    = 10.0f;
     sun.direction    = glm::normalize(glm::vec3(-1.0f, -2.0f, -1.0f));
     sun.castsShadows = rendererCfg.getBool("shadow.enabled", false);
     sceneLights.push_back(sun);

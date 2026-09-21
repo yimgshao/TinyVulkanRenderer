@@ -1,0 +1,12 @@
+{
+    "name": "forest",
+    "source": "C:\\projects\\tinyvulkanrenderer\\scenes\\IBL\\forest.exr",
+    "envSize": 512,
+    "irradianceSize": 32,
+    "prefilterSize": 128,
+    "prefilterMips": 5,
+    "lutSize": 512,
+    "samples": 1024,
+    "cubeConvention": 1,
+    "bakedAt": "2026-09-21 14:33:46"
+}
